@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cf-furnace/nsync/handlers"
 	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/cf-debug-server"
 	cf_lager "github.com/cloudfoundry-incubator/cf-lager"
@@ -15,7 +16,6 @@ import (
 	"github.com/cloudfoundry-incubator/consuladapter"
 	"github.com/cloudfoundry-incubator/diego-ssh/keys"
 	"github.com/cloudfoundry-incubator/locket"
-	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages/flags"
 	"github.com/hashicorp/consul/api"
 	"github.com/pivotal-golang/clock"
@@ -25,8 +25,11 @@ import (
 	"github.com/tedsuo/ifrit/http_server"
 	"github.com/tedsuo/ifrit/sigmon"
 
-	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
+	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry/dropsonde"
+
+	"k8s.io/kubernetes/pkg/client/restclient"
+	"k8s.io/kubernetes/pkg/client/unversioned"
 )
 
 var privilegedContainers = flag.Bool(
@@ -101,6 +104,12 @@ var bbsMaxIdleConnsPerHost = flag.Int(
 	"Controls the maximum number of idle (keep-alive) connctions per host. If zero, golang's default will be used",
 )
 
+var kubernetesCluster = flag.String(
+	"kubernetesCluster",
+	"",
+	"Kubernetes API server URL (scheme://ip:port)",
+)
+
 const (
 	dropsondeOrigin = "nsync_listener"
 )
@@ -135,7 +144,7 @@ func main() {
 		"docker":    recipebuilder.NewDockerRecipeBuilder(logger, dockerRecipeBuilderConfig),
 	}
 
-	handler := handlers.New(logger, initializeBBSClient(logger), recipeBuilders)
+	handler := handlers.New(logger, initializeBBSClient(logger), recipeBuilders, initializeK8sClient(logger))
 
 	consulClient, err := consuladapter.NewClientFromUrl(*consulCluster)
 	if err != nil {
@@ -203,6 +212,18 @@ func initializeBBSClient(logger lager.Logger) bbs.Client {
 		logger.Fatal("Failed to configure secure BBS client", err)
 	}
 	return bbsClient
+}
+
+func initializeK8sClient(logger lager.Logger) (k8sClient *unversioned.Client) {
+	k8sClient, err := unversioned.New(&restclient.Config{
+		Host: *kubernetesCluster,
+	})
+
+	if err != nil {
+		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *kubernetesCluster})
+	}
+
+	return k8sClient
 }
 
 func initializeRegistrationRunner(

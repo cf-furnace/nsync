@@ -9,12 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"time"
 
+	"k8s.io/kubernetes/pkg/client/restclient"
+	"k8s.io/kubernetes/pkg/client/unversioned"
+
+	"github.com/cf-furnace/nsync/bulk/fakes"
+	"github.com/cf-furnace/nsync/handlers"
+	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/nsync/bulk/fakes"
-	"github.com/cloudfoundry-incubator/nsync/handlers"
-	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
@@ -92,11 +96,30 @@ var _ = Describe("DesireAppHandler", func() {
 
 			request.Body = ioutil.NopCloser(reader)
 		}
+		k8sClient, err := unversioned.New(&restclient.Config{
+			Host: "http://9.37.192.140:8080/",
+		})
 
+		if err != nil {
+			logger.Fatal("Can't create Kubernetes Client", err)
+		}
+
+		// clean all pods and rcs in a given namespace
+		err = k8sClient.ReplicationControllers("linsun").Delete("some-guid")
+
+		if err != nil {
+			logger.Fatal("Unable to delete RC some-guid", err)
+		}
+
+		rc, err := k8sClient.ReplicationControllers("linsun").Get("some-guid")
+
+		if rc.Size() != 0 {
+			time.Sleep(time.Duration(10))
+		}
 		handler := handlers.NewDesireAppHandler(logger, fakeBBS, map[string]recipebuilder.RecipeBuilder{
 			"buildpack": buildpackBuilder,
 			"docker":    dockerBuilder,
-		})
+		}, k8sClient)
 		handler.DesireApp(responseRecorder, request)
 	})
 
@@ -115,8 +138,6 @@ var _ = Describe("DesireAppHandler", func() {
 				Annotation: "last-modified-etag",
 			}
 
-			fakeBBS.DesiredLRPByProcessGuidReturns(&models.DesiredLRP{}, models.ErrResourceNotFound)
-			buildpackBuilder.BuildReturns(newlyDesiredLRP, nil)
 		})
 
 		It("logs the incoming and outgoing request", func() {

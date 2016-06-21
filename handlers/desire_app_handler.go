@@ -4,15 +4,17 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/cf-furnace/nsync/handlers/transformer"
+	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/nsync/helpers"
-	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry-incubator/runtime-schema/metric"
 	"github.com/pivotal-golang/lager"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/client/unversioned"
 )
 
 const (
@@ -23,13 +25,15 @@ type DesireAppHandler struct {
 	recipeBuilders map[string]recipebuilder.RecipeBuilder
 	bbsClient      bbs.Client
 	logger         lager.Logger
+	k8sClient      unversioned.Client
 }
 
-func NewDesireAppHandler(logger lager.Logger, bbsClient bbs.Client, builders map[string]recipebuilder.RecipeBuilder) DesireAppHandler {
+func NewDesireAppHandler(logger lager.Logger, bbsClient bbs.Client, builders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) DesireAppHandler {
 	return DesireAppHandler{
 		recipeBuilders: builders,
 		bbsClient:      bbsClient,
 		logger:         logger,
+		k8sClient:      *k8sClient,
 	}
 }
 
@@ -67,16 +71,15 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	}
 
 	statusCode := http.StatusConflict
-
 	for tries := 2; tries > 0 && statusCode == http.StatusConflict; tries-- {
-		existingLRP, err := h.getDesiredLRP(logger, processGuid)
+		existingRC, err := h.getDesiredRC(logger, processGuid)
 		if err != nil {
 			statusCode = http.StatusServiceUnavailable
 			break
 		}
 
-		if existingLRP != nil {
-			err = h.updateDesiredApp(logger, existingLRP, desiredApp)
+		if existingRC != nil {
+			err = h.updateDesiredApp(logger, existingRC, desiredApp)
 		} else {
 			err = h.createDesiredApp(logger, desiredApp)
 		}
@@ -104,46 +107,44 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	resp.WriteHeader(statusCode)
 }
 
-func (h *DesireAppHandler) getDesiredLRP(logger lager.Logger, processGuid string) (*models.DesiredLRP, error) {
-	logger = logger.Session("fetching-desired-lrp")
-	lrp, err := h.bbsClient.DesiredLRPByProcessGuid(logger, processGuid)
-	logger.Debug("fetched-desired-lrp")
-	if err == nil {
-		logger.Debug("desired-lrp-already-present")
-		return lrp, nil
+func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string) (*api.ReplicationController, error) {
+	logger = logger.Session("fetching-desired-rc")
+	k8sClient := h.k8sClient
+	var err error
+
+	_, err = k8sClient.ServerVersion()
+	if err != nil {
+		logger.Fatal("Can't connect to Kubernetes API", err)
+		return nil, err
 	}
 
-	bbsError := models.ConvertError(err)
-	if bbsError.Type == models.Error_ResourceNotFound {
-		logger.Error("desired-lrp-not-found", err)
-		return nil, nil
-	}
+	logger.Debug("Connected to Kubernetes API %s")
+	// TODO: add the code to check if the processGuid exists in Kube
 
-	logger.Error("failed-fetching-desired-lrp", err)
-	return nil, err
+	return nil, nil
 }
 
-func (h *DesireAppHandler) createDesiredApp(
-	logger lager.Logger,
-	desireAppMessage cc_messages.DesireAppRequestFromCC,
-) error {
-	var builder recipebuilder.RecipeBuilder = h.recipeBuilders["buildpack"]
-	if desireAppMessage.DockerImageUrl != "" {
-		builder = h.recipeBuilders["docker"]
+func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC) error {
+	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
+	if err != nil {
+		logger.Fatal("failed-to-transform-desired-app-to-rc", err)
 	}
 
-	desiredLRP, err := builder.Build(&desireAppMessage)
+	k8sClient := h.k8sClient
+
+	_, err = k8sClient.ServerVersion()
 	if err != nil {
-		logger.Error("failed-to-build-recipe", err)
+		logger.Fatal("Can't connect to Kubernetes API", err)
 		return err
 	}
 
-	logger.Debug("creating-desired-lrp", lager.Data{"routes": sanitizeRoutes(desiredLRP.Routes)})
-	err = h.bbsClient.DesireLRP(logger, desiredLRP)
+	logger.Debug("Connected to Kubernetes API")
+	_, err = k8sClient.ReplicationControllers("linsun").Create(newRC)
 	if err != nil {
-		logger.Error("failed-to-create-lrp", err)
+		logger.Fatal("failed-to-create-lrp", err)
 		return err
 	}
+
 	logger.Debug("created-desired-lrp")
 
 	return nil
@@ -151,10 +152,21 @@ func (h *DesireAppHandler) createDesiredApp(
 
 func (h *DesireAppHandler) updateDesiredApp(
 	logger lager.Logger,
-	existingLRP *models.DesiredLRP,
+	existingRC *api.ReplicationController,
 	desireAppMessage cc_messages.DesireAppRequestFromCC,
 ) error {
-	var builder recipebuilder.RecipeBuilder = h.recipeBuilders["buildpack"]
+	k8sClient := h.k8sClient
+	var err error
+
+	_, err = k8sClient.ServerVersion()
+	if err != nil {
+		logger.Fatal("Can't connect to Kubernetes API", err)
+		return err
+	}
+
+	logger.Debug("Connected to Kubernetes API %s")
+
+	/*var builder recipebuilder.RecipeBuilder = h.recipeBuilders["buildpack"]
 	if desireAppMessage.DockerImageUrl != "" {
 		builder = h.recipeBuilders["docker"]
 	}
@@ -193,8 +205,8 @@ func (h *DesireAppHandler) updateDesiredApp(
 	if err != nil {
 		logger.Error("failed-to-update-lrp", err)
 		return err
-	}
-	logger.Debug("updated-desired-lrp")
+	}*/
+	logger.Debug("TODO - updated-desired-lrp")
 
 	return nil
 }
