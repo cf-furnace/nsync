@@ -3,20 +3,21 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/cloudfoundry-incubator/bbs"
+	"k8s.io/kubernetes/pkg/client/unversioned"
+
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/pivotal-golang/lager"
 )
 
 type StopAppHandler struct {
-	bbsClient bbs.Client
+	k8sClient *unversioned.Client
 	logger    lager.Logger
 }
 
-func NewStopAppHandler(logger lager.Logger, bbsClient bbs.Client) *StopAppHandler {
+func NewStopAppHandler(logger lager.Logger, k8sClient *unversioned.Client) *StopAppHandler {
 	return &StopAppHandler{
 		logger:    logger,
-		bbsClient: bbsClient,
+		k8sClient: k8sClient,
 	}
 }
 
@@ -39,7 +40,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	defer logger.Info("complete")
 
 	logger.Debug("removing-desired-lrp")
-	err := h.bbsClient.RemoveDesiredLRP(logger, processGuid)
+	err := h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
 	if err != nil {
 		logger.Error("failed-to-remove-desired-lrp", err)
 

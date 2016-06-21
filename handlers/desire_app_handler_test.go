@@ -140,7 +140,7 @@ var _ = Describe("DesireAppHandler", func() {
 
 		})
 
-		FIt("logs the incoming and outgoing request", func() {
+		It("logs the incoming and outgoing request", func() {
 			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
 			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
 		})

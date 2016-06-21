@@ -18,6 +18,7 @@ import (
 
 const (
 	desiredLRPCounter = metric.Counter("LRPsDesired")
+	namespace         = "linsun" // TODO need to figure out how to get namespace
 )
 
 type DesireAppHandler struct {
@@ -115,10 +116,14 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string)
 		return nil, err
 	}
 
-	logger.Debug("Connected to Kubernetes API %s")
+	logger.Debug("Connected to Kubernetes API")
 	// TODO: add the code to check if the processGuid exists in Kube
-
-	return nil, nil
+	rc, err := k8sClient.ReplicationControllers(namespace).Get(processGuid)
+	if err != nil {
+		logger.Error("Not able to find the RC", err)
+		return nil, err
+	}
+	return rc, nil
 }
 
 func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC) error {
@@ -137,7 +142,7 @@ func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessag
 	}
 
 	logger.Debug("Connected to Kubernetes API")
-	_, err = k8sClient.ReplicationControllers("linsun").Create(newRC)
+	_, err = k8sClient.ReplicationControllers(namespace).Create(newRC)
 	if err != nil {
 		logger.Fatal("failed-to-create-lrp", err)
 		return err
@@ -163,6 +168,19 @@ func (h *DesireAppHandler) updateDesiredApp(
 	}
 
 	logger.Debug("Connected to Kubernetes API %s")
+
+	logger.Debug("updating-desired-lrp")
+	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
+	_, err = k8sClient.ReplicationControllers(namespace).Update(newRC)
+
+	if err != nil {
+		logger.Fatal("failed-to-update-lrp", err)
+		return err
+	}
+
+	logger.Debug("updated-desired-lrp")
+
+	return nil
 
 	/*var builder recipebuilder.RecipeBuilder = h.recipeBuilders["buildpack"]
 	if desireAppMessage.DockerImageUrl != "" {
@@ -204,7 +222,6 @@ func (h *DesireAppHandler) updateDesiredApp(
 		logger.Error("failed-to-update-lrp", err)
 		return err
 	}*/
-	logger.Debug("TODO - updated-desired-lrp")
 
 	return nil
 }
