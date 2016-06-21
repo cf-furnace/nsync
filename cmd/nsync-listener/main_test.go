@@ -335,6 +335,7 @@ var newNSyncRunner = func(nsyncListenAddress string) *ginkgomon.Runner {
 			"-fileServerURL", "http://file-server.com",
 			"-logLevel", "debug",
 			"-consulCluster", consulRunner.ConsulCluster(),
+			"-k8sCluster", k8sCluster,
 		),
 	})
 }

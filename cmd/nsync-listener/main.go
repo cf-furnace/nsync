@@ -104,10 +104,10 @@ var bbsMaxIdleConnsPerHost = flag.Int(
 	"Controls the maximum number of idle (keep-alive) connctions per host. If zero, golang's default will be used",
 )
 
-var kubernetesCluster = flag.String(
-	"kubernetesCluster",
+var k8sCluster = flag.String(
+	"k8sCluster",
 	"",
-	"Kubernetes API server URL (scheme://ip:port)",
+	"K8s API server URL (scheme://ip:port)",
 )
 
 const (
@@ -216,11 +216,11 @@ func initializeBBSClient(logger lager.Logger) bbs.Client {
 
 func initializeK8sClient(logger lager.Logger) (k8sClient *unversioned.Client) {
 	k8sClient, err := unversioned.New(&restclient.Config{
-		Host: *kubernetesCluster,
+		Host: *k8sCluster,
 	})
 
 	if err != nil {
-		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *kubernetesCluster})
+		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *k8sCluster})
 	}
 
 	return k8sClient
