@@ -13,7 +13,7 @@ import (
 )
 
 func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) http.Handler {
-	desireAppHandler := NewDesireAppHandler(logger, bbsClient, recipebuilders, k8sClient)
+	desireAppHandler := NewDesireAppHandler(logger, recipebuilders, k8sClient)
 	stopAppHandler := NewStopAppHandler(logger, bbsClient)
 	killIndexHandler := NewKillIndexHandler(logger, bbsClient)
 	taskHandler := NewTaskHandler(logger, bbsClient, recipebuilders)

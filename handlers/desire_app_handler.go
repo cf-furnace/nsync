@@ -6,7 +6,6 @@ import (
 
 	"github.com/cf-furnace/nsync/handlers/transformer"
 	"github.com/cf-furnace/nsync/recipebuilder"
-	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
@@ -23,15 +22,13 @@ const (
 
 type DesireAppHandler struct {
 	recipeBuilders map[string]recipebuilder.RecipeBuilder
-	bbsClient      bbs.Client
 	logger         lager.Logger
 	k8sClient      unversioned.Client
 }
 
-func NewDesireAppHandler(logger lager.Logger, bbsClient bbs.Client, builders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) DesireAppHandler {
+func NewDesireAppHandler(logger lager.Logger, builders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) DesireAppHandler {
 	return DesireAppHandler{
 		recipeBuilders: builders,
-		bbsClient:      bbsClient,
 		logger:         logger,
 		k8sClient:      *k8sClient,
 	}
@@ -125,6 +122,7 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string)
 }
 
 func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC) error {
+	logger = logger.Session("creating-desired-lrp")
 	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
 	if err != nil {
 		logger.Fatal("failed-to-transform-desired-app-to-rc", err)

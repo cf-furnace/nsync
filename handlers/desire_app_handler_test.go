@@ -116,7 +116,7 @@ var _ = Describe("DesireAppHandler", func() {
 		if rc.Size() != 0 {
 			time.Sleep(time.Duration(10))
 		}
-		handler := handlers.NewDesireAppHandler(logger, fakeBBS, map[string]recipebuilder.RecipeBuilder{
+		handler := handlers.NewDesireAppHandler(logger, map[string]recipebuilder.RecipeBuilder{
 			"buildpack": buildpackBuilder,
 			"docker":    dockerBuilder,
 		}, k8sClient)
@@ -140,7 +140,7 @@ var _ = Describe("DesireAppHandler", func() {
 
 		})
 
-		It("logs the incoming and outgoing request", func() {
+		FIt("logs the incoming and outgoing request", func() {
 			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
 			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
 		})
