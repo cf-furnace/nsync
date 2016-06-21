@@ -51,7 +51,7 @@ var _ = Describe("Nsync Listener", func() {
 			"memory_mb":        256,
 			"disk_mb":          1024,
 			"file_descriptors": 16,
-			"num_instances":    nInstances,
+			"num_instances": `+strconv.Itoa(nInstances)+`,
 			"log_guid": "log-guid-1",
 			"etag":    "1234567.1890",
 			"ports":   [8080]
@@ -107,7 +107,7 @@ var _ = Describe("Nsync Listener", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		FIt("checking status code", func() {
+		It("checking desired app creation status code", func() {
 			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
 		})
 
