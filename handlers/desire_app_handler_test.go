@@ -158,7 +158,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
 			})
 
-			FIt("gets the replication controllers", func() {
+			FIt("creates the desired LRP - replication controllers", func() {
 				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
 				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
 				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
@@ -170,33 +170,18 @@ var _ = Describe("DesireAppHandler", func() {
 				Expect(actualRC).To(Equal(expectedRC))
 			})
 
-		})
-		BeforeEach(func() {
+			FIt("logs the incoming and outgoing request", func() {
+				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
+				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
+			})
 
-		})
+			FIt("responds with 202 Accepted", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
+			})
 
-		It("logs the incoming and outgoing request", func() {
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
-		})
-
-		It("creates the desired LRP", func() {
-			Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(1))
-			expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
-			Expect(err).NotTo(HaveOccurred())
-
-			desiredRC, err := fakeK8s.ReplicationControllers("linsun").Get("some-guid")
-			Expect(desiredRC).To(Equal(expectedRC))
-
-			Expect(buildpackBuilder.BuildArgsForCall(0)).To(Equal(&desireAppRequest))
-		})
-
-		It("responds with 202 Accepted", func() {
-			Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-		})
-
-		It("increments the desired LRPs counter", func() {
-			Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
+			FIt("increments the desired LRPs counter", func() {
+				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
+			})
 		})
 
 		Context("when the bbs fails", func() {
