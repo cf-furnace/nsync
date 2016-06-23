@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"time"
 
-	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/api"
 
 	"github.com/cf-furnace/nsync/bulk/fakes"
 	"github.com/cf-furnace/nsync/handlers"
+	"github.com/cf-furnace/nsync/handlers/transformer"
+	"github.com/cf-furnace/nsync/handlers/unversionedfakes"
 	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
@@ -35,22 +35,26 @@ var _ = Describe("DesireAppHandler", func() {
 	var (
 		logger           *lagertest.TestLogger
 		fakeBBS          *fake_bbs.FakeClient
+		fakeK8s          *unversionedfakes.FakeInterface
 		buildpackBuilder *fakes.FakeRecipeBuilder
 		dockerBuilder    *fakes.FakeRecipeBuilder
 		desireAppRequest cc_messages.DesireAppRequestFromCC
 		metricSender     *fake.FakeMetricSender
 
-		request          *http.Request
-		responseRecorder *httptest.ResponseRecorder
+		request           *http.Request
+		responseRecorder  *httptest.ResponseRecorder
+		expectedNamespace string
 	)
 
 	BeforeEach(func() {
 		var err error
 
 		logger = lagertest.NewTestLogger("test")
-		fakeBBS = new(fake_bbs.FakeClient)
+		fakeBBS = &fake_bbs.FakeClient{}
+		fakeK8s = new(unversionedfakes.FakeInterface)
 		buildpackBuilder = new(fakes.FakeRecipeBuilder)
 		dockerBuilder = new(fakes.FakeRecipeBuilder)
+		expectedNamespace = "linsun"
 
 		routingInfo, err := cc_messages.CCHTTPRoutes{
 			{Hostname: "route1"},
@@ -96,47 +100,78 @@ var _ = Describe("DesireAppHandler", func() {
 
 			request.Body = ioutil.NopCloser(reader)
 		}
-		k8sClient, err := unversioned.New(&restclient.Config{
-			Host: "http://9.37.192.140:8080/",
-		})
 
-		if err != nil {
-			logger.Fatal("Can't create Kubernetes Client", err)
-		}
-
-		// clean all pods and rcs in a given namespace
-		err = k8sClient.ReplicationControllers("linsun").Delete("some-guid")
-
-		if err != nil {
-			logger.Fatal("Unable to delete RC some-guid", err)
-		}
-
-		rc, err := k8sClient.ReplicationControllers("linsun").Get("some-guid")
-
-		if rc.Size() != 0 {
-			time.Sleep(time.Duration(10))
-		}
 		handler := handlers.NewDesireAppHandler(logger, map[string]recipebuilder.RecipeBuilder{
 			"buildpack": buildpackBuilder,
 			"docker":    dockerBuilder,
-		}, k8sClient)
+		}, fakeK8s)
 		handler.DesireApp(responseRecorder, request)
 	})
 
 	Context("when the desired LRP does not exist", func() {
-		var newlyDesiredLRP *models.DesiredLRP
 
+		Context("when the namespace is missing", func() {
+			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
+			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
+
+			BeforeEach(func() {
+				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeNamespace.GetReturns(nil, errors.New("namespace doesn't exist yet"))
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+
+			})
+
+			FIt("creates the namespace", func() {
+				Expect(fakeK8s.NamespacesCallCount()).To(Equal(2))
+				Expect(fakeNamespace.GetCallCount()).To(Equal(1))
+				Expect(fakeNamespace.GetArgsForCall(0)).To(Equal(expectedNamespace))
+
+				Expect(fakeNamespace.CreateCallCount()).To(Equal(1))
+				Expect(fakeNamespace.CreateArgsForCall(0).ObjectMeta.Name).To(Equal(expectedNamespace))
+
+			})
+		})
+
+		Context("when the namespace already exists", func() {
+			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
+			var apiNS *api.Namespace
+			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
+
+			BeforeEach(func() {
+				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+
+				apiNS = &api.Namespace{
+					ObjectMeta: api.ObjectMeta{
+						Name: expectedNamespace,
+					},
+					Spec: api.NamespaceSpec{
+						Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+					},
+				}
+
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeNamespace.GetReturns(apiNS, nil)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+			})
+
+			FIt("gets the replication controllers", func() {
+				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
+				Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
+				Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
+				actualRC := fakeReplicationController.CreateArgsForCall(0)
+				expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(actualRC).To(Equal(expectedRC))
+			})
+
+		})
 		BeforeEach(func() {
-			newlyDesiredLRP = &models.DesiredLRP{
-				ProcessGuid: "new-process-guid",
-				Instances:   1,
-				RootFs:      models.PreloadedRootFS("stack-2"),
-				Action: models.WrapAction(&models.RunAction{
-					User: "me",
-					Path: "ls",
-				}),
-				Annotation: "last-modified-etag",
-			}
 
 		})
 
@@ -146,11 +181,12 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		It("creates the desired LRP", func() {
-			Expect(fakeBBS.DesireLRPCallCount()).To(Equal(1))
+			Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(1))
+			expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+			Expect(err).NotTo(HaveOccurred())
 
-			Expect(fakeBBS.DesiredLRPByProcessGuidCallCount()).To(Equal(1))
-			_, desiredLRP := fakeBBS.DesireLRPArgsForCall(0)
-			Expect(desiredLRP).To(Equal(newlyDesiredLRP))
+			desiredRC, err := fakeK8s.ReplicationControllers("linsun").Get("some-guid")
+			Expect(desiredRC).To(Equal(expectedRC))
 
 			Expect(buildpackBuilder.BuildArgsForCall(0)).To(Equal(&desireAppRequest))
 		})

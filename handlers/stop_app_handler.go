@@ -10,11 +10,11 @@ import (
 )
 
 type StopAppHandler struct {
-	k8sClient *unversioned.Client
+	k8sClient unversioned.Interface
 	logger    lager.Logger
 }
 
-func NewStopAppHandler(logger lager.Logger, k8sClient *unversioned.Client) *StopAppHandler {
+func NewStopAppHandler(logger lager.Logger, k8sClient unversioned.Interface) *StopAppHandler {
 	return &StopAppHandler{
 		logger:    logger,
 		k8sClient: k8sClient,

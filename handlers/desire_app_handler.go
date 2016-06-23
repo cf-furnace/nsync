@@ -24,14 +24,14 @@ const (
 type DesireAppHandler struct {
 	recipeBuilders map[string]recipebuilder.RecipeBuilder
 	logger         lager.Logger
-	k8sClient      unversioned.Client
+	k8sClient      unversioned.Interface
 }
 
-func NewDesireAppHandler(logger lager.Logger, builders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) DesireAppHandler {
+func NewDesireAppHandler(logger lager.Logger, builders map[string]recipebuilder.RecipeBuilder, k8sClient unversioned.Interface) DesireAppHandler {
 	return DesireAppHandler{
 		recipeBuilders: builders,
 		logger:         logger,
-		k8sClient:      *k8sClient,
+		k8sClient:      k8sClient,
 	}
 }
 
@@ -70,7 +70,7 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 
 	statusCode := http.StatusConflict
 	for tries := 2; tries > 0 && statusCode == http.StatusConflict; tries-- {
-		existingRC, err := h.getDesiredRC(logger, processGuid)
+		existingRC, err := h.getDesiredRC(logger, processGuid, namespace)
 		if err != nil {
 			statusCode = http.StatusServiceUnavailable
 			break
@@ -105,19 +105,27 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	resp.WriteHeader(statusCode)
 }
 
-func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string) (*api.ReplicationController, error) {
+func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string, namespace string) (*api.ReplicationController, error) {
 	logger = logger.Session("fetching-desired-rc")
 	k8sClient := h.k8sClient
 	var err error
 
-	_, err = k8sClient.ServerVersion()
+	_, err = k8sClient.Namespaces().Get(namespace)
 	if err != nil {
-		logger.Fatal("Can't connect to Kubernetes API", err)
-		return nil, err
+		apiNS := &api.Namespace{
+			ObjectMeta: api.ObjectMeta{
+				Name: namespace,
+			},
+			Spec: api.NamespaceSpec{
+				Finalizers: []api.FinalizerName{api.FinalizerName(namespace)},
+			},
+		}
+		_, err = k8sClient.Namespaces().Create(apiNS)
+		if err != nil {
+			logger.Error("Not able to create namespace", err, lager.Data{"namespace": namespace})
+		}
 	}
 
-	logger.Debug("Connected to Kubernetes API")
-	// TODO: add the code to check if the processGuid exists in Kube
 	rc, err := k8sClient.ReplicationControllers(namespace).Get(processGuid)
 	if err != nil {
 		logger.Error("Not able to find the RC", err)
@@ -135,13 +143,6 @@ func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessag
 
 	k8sClient := h.k8sClient
 
-	_, err = k8sClient.ServerVersion()
-	if err != nil {
-		logger.Fatal("Can't connect to Kubernetes API", err)
-		return err
-	}
-
-	logger.Debug("Connected to Kubernetes API")
 	_, err = k8sClient.ReplicationControllers(namespace).Create(newRC)
 	if err != nil {
 		logger.Fatal("failed-to-create-lrp", err)
@@ -161,13 +162,13 @@ func (h *DesireAppHandler) updateDesiredApp(
 	k8sClient := h.k8sClient
 	var err error
 
-	_, err = k8sClient.ServerVersion()
+	/*_, err = k8sClient.ServerVersion()
 	if err != nil {
 		logger.Fatal("Can't connect to Kubernetes API", err)
 		return err
 	}
 
-	logger.Debug("Connected to Kubernetes API %s")
+	logger.Debug("Connected to Kubernetes API %s")*/
 
 	logger.Debug("updating-desired-lrp")
 	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
@@ -222,8 +223,6 @@ func (h *DesireAppHandler) updateDesiredApp(
 		logger.Error("failed-to-update-lrp", err)
 		return err
 	}*/
-
-	return nil
 }
 
 func sanitizeRoutes(routes *models.Routes) *models.Routes {

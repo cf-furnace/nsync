@@ -12,7 +12,7 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient *unversioned.Client) http.Handler {
+func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient unversioned.Interface) http.Handler {
 	desireAppHandler := NewDesireAppHandler(logger, recipebuilders, k8sClient)
 	stopAppHandler := NewStopAppHandler(logger, k8sClient)
 	killIndexHandler := NewKillIndexHandler(logger, bbsClient)

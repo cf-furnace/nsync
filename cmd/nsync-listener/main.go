@@ -214,7 +214,7 @@ func initializeBBSClient(logger lager.Logger) bbs.Client {
 	return bbsClient
 }
 
-func initializeK8sClient(logger lager.Logger) (k8sClient *unversioned.Client) {
+func initializeK8sClient(logger lager.Logger) (k8sClient unversioned.Interface) {
 	k8sClient, err := unversioned.New(&restclient.Config{
 		Host: *k8sCluster,
 	})
