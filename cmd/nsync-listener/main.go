@@ -124,6 +124,7 @@ func main() {
 
 	cf_http.Initialize(*communicationTimeout)
 	logger, reconfigurableSink := cf_lager.New("nsync-listener")
+	reconfigurableSink.SetMinLevel(lager.DEBUG)
 
 	initializeDropsonde(logger)
 

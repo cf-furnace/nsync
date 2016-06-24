@@ -145,10 +145,9 @@ func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessag
 
 	_, err = k8sClient.ReplicationControllers(namespace).Create(newRC)
 	if err != nil {
-		logger.Fatal("failed-to-create-lrp", err)
+		logger.Fatal("failed-to-create-lrp")
 		return err
 	}
-
 	logger.Debug("created-desired-lrp")
 
 	return nil

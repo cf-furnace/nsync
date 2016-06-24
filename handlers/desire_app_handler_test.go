@@ -124,7 +124,7 @@ var _ = Describe("DesireAppHandler", func() {
 
 			})
 
-			FIt("creates the namespace", func() {
+			It("creates the namespace", func() {
 				Expect(fakeK8s.NamespacesCallCount()).To(Equal(2))
 				Expect(fakeNamespace.GetCallCount()).To(Equal(1))
 				Expect(fakeNamespace.GetArgsForCall(0)).To(Equal(expectedNamespace))
@@ -158,7 +158,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
 			})
 
-			FIt("creates the desired LRP - replication controllers", func() {
+			It("creates the desired LRP - replication controllers", func() {
 				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
 				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
 				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
@@ -170,23 +170,30 @@ var _ = Describe("DesireAppHandler", func() {
 				Expect(actualRC).To(Equal(expectedRC))
 			})
 
-			FIt("logs the incoming and outgoing request", func() {
+			It("logs the incoming and outgoing request", func() {
 				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
 				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
 			})
 
-			FIt("responds with 202 Accepted", func() {
+			It("responds with 202 Accepted", func() {
 				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
 			})
 
-			FIt("increments the desired LRPs counter", func() {
+			It("increments the desired LRPs counter", func() {
 				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
 			})
 		})
 
-		Context("when the bbs fails", func() {
+		Context("when the kubernetes fails", func() {
+			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
+			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
+
 			BeforeEach(func() {
-				fakeBBS.DesireLRPReturns(errors.New("oh no"))
+				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
 			})
 
 			It("responds with a ServiceUnavailabe error", func() {
