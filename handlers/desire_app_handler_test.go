@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +18,6 @@ import (
 	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
 	"github.com/cloudfoundry/dropsonde/metrics"
@@ -108,11 +106,10 @@ var _ = Describe("DesireAppHandler", func() {
 	})
 
 	Context("when the desired LRP does not exist", func() {
+		var fakeNamespace *unversionedfakes.FakeNamespaceInterface
+		var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
 
 		Context("when the namespace is missing", func() {
-			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
-			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
-
 			BeforeEach(func() {
 				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
 				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
@@ -135,9 +132,7 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		Context("when the namespace already exists", func() {
-			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
 			var apiNS *api.Namespace
-			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
 
 			BeforeEach(func() {
 				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
@@ -184,9 +179,6 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		Context("when the kubernetes fails", func() {
-			var fakeNamespace *unversionedfakes.FakeNamespaceInterface
-			var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
-
 			BeforeEach(func() {
 				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
 				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
@@ -195,89 +187,45 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
 			})
 
-			FIt("responds with a ServiceUnavailabe error", func() {
+			It("responds with a ServiceUnavailabe error", func() {
 				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
 			})
 		})
 
-		/*Context("when the bbs fails with a Conflict error", func() {
-			BeforeEach(func() {
-				fakeBBS.DesireLRPStub = func(_ lager.Logger, _ *models.DesiredLRP) error {
-					fakeBBS.DesiredLRPByProcessGuidReturns(&models.DesiredLRP{
-						ProcessGuid: "some-guid",
-					}, nil)
-					return models.ErrResourceExists
-				}
-			})
-
-			It("retries", func() {
-				Expect(fakeBBS.DesireLRPCallCount()).To(Equal(1))
-				Expect(fakeBBS.UpdateDesiredLRPCallCount()).To(Equal(1))
-			})
-
-			It("suceeds if the second try is sucessful", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-			})
-
-			Context("when updating the desired LRP fails with a conflict error", func() {
-				BeforeEach(func() {
-					fakeBBS.UpdateDesiredLRPReturns(models.ErrResourceConflict)
-				})
-
-				It("fails with a 409 Conflict if the second try is unsuccessful", func() {
-					Expect(responseRecorder.Code).To(Equal(http.StatusConflict))
-				})
-			})
-		})
-
-		Context("when building the recipe fails to build", func() {
-			BeforeEach(func() {
-				buildpackBuilder.BuildReturns(nil, recipebuilder.ErrDropletSourceMissing)
-			})
-
-			It("logs an error", func() {
-				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("failed-to-build-recipe"))
-				Eventually(logger.TestSink.Buffer).Should(gbytes.Say(recipebuilder.ErrDropletSourceMissing.Message))
-			})
-
-			It("does not desire the LRP", func() {
-				Consistently(fakeBBS.RemoveDesiredLRPCallCount).Should(Equal(0))
-			})
-
-			It("responds with 400 Bad Request", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
-			})
-		})*/
-
 		Context("when the LRP has docker image", func() {
-			var newlyDesiredDockerLRP *models.DesiredLRP
+			var apiNS *api.Namespace
 
 			BeforeEach(func() {
 				desireAppRequest.DropletUri = ""
 				desireAppRequest.DockerImageUrl = "docker:///user/repo#tag"
 
-				newlyDesiredDockerLRP = &models.DesiredLRP{
-					ProcessGuid: "new-process-guid",
-					Instances:   1,
-					RootFs:      "docker:///user/repo#tag",
-					Action: models.WrapAction(&models.RunAction{
-						User: "me",
-						Path: "ls",
-					}),
-					Annotation: "last-modified-etag",
+				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+
+				apiNS = &api.Namespace{
+					ObjectMeta: api.ObjectMeta{
+						Name: expectedNamespace,
+					},
+					Spec: api.NamespaceSpec{
+						Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+					},
 				}
 
-				dockerBuilder.BuildReturns(newlyDesiredDockerLRP, nil)
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeNamespace.GetReturns(apiNS, nil)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
 			})
 
 			It("creates the desired LRP in kubernetes", func() {
-				Expect(fakeBBS.DesireLRPCallCount()).To(Equal(1))
-
-				Expect(fakeBBS.DesiredLRPByProcessGuidCallCount()).To(Equal(1))
-				_, desiredLRP := fakeBBS.DesireLRPArgsForCall(0)
-				Expect(desiredLRP).To(Equal(newlyDesiredDockerLRP))
-
-				Expect(dockerBuilder.BuildArgsForCall(0)).To(Equal(&desireAppRequest))
+				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
+				Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
+				Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
+				actualRC := fakeReplicationController.CreateArgsForCall(0)
+				expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(actualRC).To(Equal(expectedRC))
 			})
 
 			It("responds with 202 Accepted", func() {
@@ -291,30 +239,59 @@ var _ = Describe("DesireAppHandler", func() {
 	})
 
 	Context("when desired LRP already exists", func() {
-		var opaqueRoutingMessage json.RawMessage
+		var fakeNamespace *unversionedfakes.FakeNamespaceInterface
+		var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
 
 		BeforeEach(func() {
-			buildpackBuilder.ExtractExposedPortsStub = func(ccRequest *cc_messages.DesireAppRequestFromCC) ([]uint32, error) {
-				return []uint32{8080}, nil
-			}
-
-			cfRoute := cfroutes.CFRoute{
-				Hostnames: []string{"route1"},
-				Port:      8080,
-			}
-			cfRoutePayload, err := json.Marshal(cfRoute)
-			Expect(err).NotTo(HaveOccurred())
-
-			cfRouteMessage := json.RawMessage(cfRoutePayload)
-			opaqueRoutingMessage = json.RawMessage([]byte(`{"some": "value"}`))
-
-			fakeBBS.DesiredLRPByProcessGuidReturns(&models.DesiredLRP{
-				ProcessGuid: "some-guid",
-				Routes: &models.Routes{
-					cfroutes.CF_ROUTER:        &cfRouteMessage,
-					"some-other-routing-data": &opaqueRoutingMessage,
+			fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+			fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+			apiNS := &api.Namespace{
+				ObjectMeta: api.ObjectMeta{
+					Name: expectedNamespace,
 				},
-			}, nil)
+				Spec: api.NamespaceSpec{
+					Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+				},
+			}
+			fakeK8s.NamespacesReturns(fakeNamespace)
+			fakeNamespace.GetReturns(apiNS, nil)
+
+			fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+			existingRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existingRC).NotTo(Equal(nil))
+			fakeReplicationController.GetReturns(existingRC, nil)
+
+			desireAppRequest.NumInstances = 3
+		})
+
+		JustBeforeEach(func() {
+			if request.Body == nil {
+				jsonBytes, err := json.Marshal(&desireAppRequest)
+				Expect(err).NotTo(HaveOccurred())
+				reader := bytes.NewReader(jsonBytes)
+
+				request.Body = ioutil.NopCloser(reader)
+			}
+
+			handler := handlers.NewDesireAppHandler(logger, map[string]recipebuilder.RecipeBuilder{
+				"buildpack": buildpackBuilder,
+				"docker":    dockerBuilder,
+			}, fakeK8s)
+			handler.DesireApp(responseRecorder, request)
+		})
+
+		It("updates the desired LRP - replication controllers", func() {
+			Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
+			Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
+			Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
+			Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
+			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(1))
+			Expect(fakeReplicationController.CreateCallCount()).To(Equal(0))
+			actualRC := fakeReplicationController.UpdateArgsForCall(0)
+			expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(actualRC).To(Equal(expectedRC))
 		})
 
 		It("logs the incoming and outgoing request", func() {
@@ -323,100 +300,20 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		It("checks to see if LRP already exists", func() {
-			Eventually(fakeBBS.DesiredLRPByProcessGuidCallCount).Should(Equal(1))
-		})
-
-		opaqueRoutingDataCheck := func(expectedRoutes cfroutes.CFRoutes) {
-			Eventually(fakeBBS.UpdateDesiredLRPCallCount).Should(Equal(1))
-
-			_, processGuid, updateRequest := fakeBBS.UpdateDesiredLRPArgsForCall(0)
-			Expect(processGuid).To(Equal("some-guid"))
-			Expect(*updateRequest.Instances).To(BeEquivalentTo(2))
-			Expect(*updateRequest.Annotation).To(Equal("last-modified-etag"))
-
-			cfJson := (*updateRequest.Routes)[cfroutes.CF_ROUTER]
-			otherJson := (*updateRequest.Routes)["some-other-routing-data"]
-
-			var cfRoutes cfroutes.CFRoutes
-			err := json.Unmarshal(*cfJson, &cfRoutes)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(cfRoutes).To(ConsistOf(expectedRoutes))
-			Expect(cfRoutes).To(HaveLen(len(expectedRoutes)))
-			Expect(otherJson).To(Equal(&opaqueRoutingMessage))
-		}
-
-		It("updates the LRP without stepping on opaque routing data", func() {
-			expected := cfroutes.CFRoutes{
-				{Hostnames: []string{"route1", "route2"}, Port: 8080},
-			}
-			opaqueRoutingDataCheck(expected)
+			Eventually(fakeReplicationController.GetCallCount()).Should(Equal(1))
 		})
 
 		It("responds with 202 Accepted", func() {
 			Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
 		})
 
-		It("uses buildpack builder", func() {
-			Expect(dockerBuilder.ExtractExposedPortsCallCount()).To(Equal(0))
-			Expect(buildpackBuilder.ExtractExposedPortsCallCount()).To(Equal(1))
-
-			Expect(buildpackBuilder.ExtractExposedPortsArgsForCall(0)).To(Equal(&desireAppRequest))
-		})
-
-		/*Context("when multiple routes with same route service are sent", func() {
-			var routesToEmit cfroutes.CFRoutes
+		Context("when the kubernetes fails", func() {
 			BeforeEach(func() {
-				routingInfo, err := cc_messages.CCHTTPRoutes{
-					{Hostname: "route1", RouteServiceUrl: "https://rs.example.com"},
-					{Hostname: "route2", RouteServiceUrl: "https://rs.example.com"},
-					{Hostname: "route3"},
-				}.CCRouteInfo()
-				Expect(err).NotTo(HaveOccurred())
-
-				desireAppRequest.RoutingInfo = routingInfo
-			})
-
-			It("aggregates the http routes with the same route service url", func() {
-				routesToEmit = cfroutes.CFRoutes{
-					{Hostnames: []string{"route1", "route2"}, Port: 8080, RouteServiceUrl: "https://rs.example.com"},
-					{Hostnames: []string{"route3"}, Port: 8080},
-				}
-				opaqueRoutingDataCheck(routesToEmit)
-			})
-		})*/
-
-		Context("when multiple routes with different route service are sent", func() {
-			var routesToEmit cfroutes.CFRoutes
-			BeforeEach(func() {
-				routingInfo, err := cc_messages.CCHTTPRoutes{
-					{Hostname: "route1", RouteServiceUrl: "https://rs.example.com"},
-					{Hostname: "route2", RouteServiceUrl: "https://rs.example.com"},
-					{Hostname: "route3"},
-					{Hostname: "route4", RouteServiceUrl: "https://rs.other.com"},
-					{Hostname: "route5", RouteServiceUrl: "https://rs.other.com"},
-					{Hostname: "route6"},
-					{Hostname: "route7", RouteServiceUrl: "https://rs.another.com"},
-				}.CCRouteInfo()
-				Expect(err).NotTo(HaveOccurred())
-
-				desireAppRequest.RoutingInfo = routingInfo
-			})
-
-			It("aggregates the http routes with the same route service url", func() {
-				routesToEmit = cfroutes.CFRoutes{
-					{Hostnames: []string{"route1", "route2"}, Port: 8080, RouteServiceUrl: "https://rs.example.com"},
-					{Hostnames: []string{"route3", "route6"}, Port: 8080},
-					{Hostnames: []string{"route4", "route5"}, Port: 8080, RouteServiceUrl: "https://rs.other.com"},
-					{Hostnames: []string{"route7"}, Port: 8080, RouteServiceUrl: "https://rs.another.com"},
-				}
-				opaqueRoutingDataCheck(routesToEmit)
-			})
-		})
-
-		Context("when the bbs fails", func() {
-			BeforeEach(func() {
-				fakeBBS.UpdateDesiredLRPReturns(errors.New("oh no"))
+				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
 			})
 
 			It("responds with a ServiceUnavailabe error", func() {
@@ -434,60 +331,6 @@ var _ = Describe("DesireAppHandler", func() {
 			})
 		})
 
-		Context("when the LRP has docker image", func() {
-			var (
-				existingDesiredDockerLRP *models.DesiredLRP
-				expectedPort             uint32
-				expectedMetadata         string
-			)
-
-			BeforeEach(func() {
-				desireAppRequest.DropletUri = ""
-				desireAppRequest.DockerImageUrl = "docker:///user/repo#tag"
-
-				expectedMetadata = fmt.Sprintf(`{"ports": {"port": %d, "protocol":"http"}}`, expectedPort)
-				desireAppRequest.ExecutionMetadata = expectedMetadata
-
-				dockerBuilder.ExtractExposedPortsStub = func(ccRequest *cc_messages.DesireAppRequestFromCC) ([]uint32, error) {
-					return []uint32{expectedPort}, nil
-				}
-
-				existingDesiredDockerLRP = &models.DesiredLRP{
-					ProcessGuid: "new-process-guid",
-					Instances:   1,
-					RootFs:      "docker:///user/repo#tag",
-					Action: models.WrapAction(&models.RunAction{
-						User: "me",
-						Path: "ls",
-					}),
-					Annotation: "last-modified-etag",
-				}
-
-				dockerBuilder.BuildReturns(existingDesiredDockerLRP, nil)
-			})
-
-			It("checks to see if LRP already exists", func() {
-				Eventually(fakeBBS.DesiredLRPByProcessGuidCallCount).Should(Equal(1))
-			})
-
-			It("updates the LRP without stepping on opaque routing data", func() {
-				expected := cfroutes.CFRoutes{
-					{Hostnames: []string{"route1", "route2"}, Port: expectedPort},
-				}
-				opaqueRoutingDataCheck(expected)
-			})
-
-			It("responds with 202 Accepted", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-			})
-
-			It("uses docker builder", func() {
-				Expect(buildpackBuilder.ExtractExposedPortsCallCount()).To(Equal(0))
-				Expect(dockerBuilder.ExtractExposedPortsCallCount()).To(Equal(1))
-
-				Expect(dockerBuilder.ExtractExposedPortsArgsForCall(0)).To(Equal(&desireAppRequest))
-			})
-		})
 	})
 
 	Context("when an invalid desire app message is received", func() {
