@@ -5,7 +5,6 @@ import (
 
 	"k8s.io/kubernetes/pkg/client/unversioned"
 
-	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/pivotal-golang/lager"
 )
 
@@ -40,20 +39,21 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	defer logger.Info("complete")
 
 	logger.Debug("removing-desired-lrp")
-	err := h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
-	if err != nil {
-		logger.Error("failed-to-remove-desired-lrp", err)
+	rc, err := h.k8sClient.ReplicationControllers(namespace).Get(processGuid)
+	if rc != nil {
+		err = h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
+		if err != nil {
+			logger.Error("failed-to-remove-desired-lrp", err)
 
-		bbsError := models.ConvertError(err)
-		if bbsError.Type == models.Error_ResourceNotFound {
-			resp.WriteHeader(http.StatusNotFound)
+			resp.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		logger.Debug("removed-desired-lrp")
 
-		resp.WriteHeader(http.StatusServiceUnavailable)
+		resp.WriteHeader(http.StatusAccepted)
+	} else {
+		logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
+		resp.WriteHeader(http.StatusNotFound)
 		return
 	}
-	logger.Debug("removed-desired-lrp")
-
-	resp.WriteHeader(http.StatusAccepted)
 }

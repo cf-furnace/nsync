@@ -41,6 +41,10 @@ var _ = Describe("DesireAppHandler", func() {
 		request           *http.Request
 		responseRecorder  *httptest.ResponseRecorder
 		expectedNamespace string
+
+		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
+		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
+		apiNS                     *api.Namespace
 	)
 
 	BeforeEach(func() {
@@ -52,6 +56,16 @@ var _ = Describe("DesireAppHandler", func() {
 		buildpackBuilder = new(fakes.FakeRecipeBuilder)
 		dockerBuilder = new(fakes.FakeRecipeBuilder)
 		expectedNamespace = "linsun"
+		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+		apiNS = &api.Namespace{
+			ObjectMeta: api.ObjectMeta{
+				Name: expectedNamespace,
+			},
+			Spec: api.NamespaceSpec{
+				Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+			},
+		}
 
 		routingInfo, err := cc_messages.CCHTTPRoutes{
 			{Hostname: "route1"},
@@ -106,14 +120,9 @@ var _ = Describe("DesireAppHandler", func() {
 	})
 
 	Context("when the desired LRP does not exist", func() {
-		var fakeNamespace *unversionedfakes.FakeNamespaceInterface
-		var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
 
 		Context("when the namespace is missing", func() {
 			BeforeEach(func() {
-				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
-
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(nil, errors.New("namespace doesn't exist yet"))
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
@@ -132,21 +141,8 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		Context("when the namespace already exists", func() {
-			var apiNS *api.Namespace
 
 			BeforeEach(func() {
-				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
-
-				apiNS = &api.Namespace{
-					ObjectMeta: api.ObjectMeta{
-						Name: expectedNamespace,
-					},
-					Spec: api.NamespaceSpec{
-						Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
-					},
-				}
-
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
@@ -180,8 +176,6 @@ var _ = Describe("DesireAppHandler", func() {
 
 		Context("when the kubernetes fails", func() {
 			BeforeEach(func() {
-				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
 				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
@@ -198,9 +192,6 @@ var _ = Describe("DesireAppHandler", func() {
 			BeforeEach(func() {
 				desireAppRequest.DropletUri = ""
 				desireAppRequest.DockerImageUrl = "docker:///user/repo#tag"
-
-				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 
 				apiNS = &api.Namespace{
 					ObjectMeta: api.ObjectMeta{
@@ -239,20 +230,7 @@ var _ = Describe("DesireAppHandler", func() {
 	})
 
 	Context("when desired LRP already exists", func() {
-		var fakeNamespace *unversionedfakes.FakeNamespaceInterface
-		var fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
-
 		BeforeEach(func() {
-			fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-			fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
-			apiNS := &api.Namespace{
-				ObjectMeta: api.ObjectMeta{
-					Name: expectedNamespace,
-				},
-				Spec: api.NamespaceSpec{
-					Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
-				},
-			}
 			fakeK8s.NamespacesReturns(fakeNamespace)
 			fakeNamespace.GetReturns(apiNS, nil)
 
@@ -309,25 +287,13 @@ var _ = Describe("DesireAppHandler", func() {
 
 		Context("when the kubernetes fails", func() {
 			BeforeEach(func() {
-				fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-				fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
+				fakeReplicationController.UpdateReturns(nil, errors.New("oh no"))
 			})
 
 			It("responds with a ServiceUnavailabe error", func() {
 				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
-			})
-		})
-
-		Context("when the bbs fails with a conflict", func() {
-			BeforeEach(func() {
-				fakeBBS.UpdateDesiredLRPReturns(models.ErrResourceConflict)
-			})
-
-			It("responds with a Conflict error", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusConflict))
 			})
 		})
 

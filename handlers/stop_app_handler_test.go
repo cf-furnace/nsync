@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 
+	"k8s.io/kubernetes/pkg/api"
+
+	"github.com/cf-furnace/nsync/handlers"
+	"github.com/cf-furnace/nsync/handlers/unversionedfakes"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/pivotal-golang/lager/lagertest"
 
 	. "github.com/onsi/ginkgo"
@@ -17,16 +19,32 @@ import (
 
 var _ = Describe("StopAppHandler", func() {
 	var (
-		logger  *lagertest.TestLogger
-		fakeBBS *fake_bbs.FakeClient
-
-		request          *http.Request
-		responseRecorder *httptest.ResponseRecorder
+		logger                    *lagertest.TestLogger
+		fakeBBS                   *fake_bbs.FakeClient
+		fakeK8s                   *unversionedfakes.FakeInterface
+		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
+		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
+		expectedNamespace         string
+		request                   *http.Request
+		responseRecorder          *httptest.ResponseRecorder
+		apiNS                     *api.Namespace
 	)
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
-		fakeBBS = new(fake_bbs.FakeClient)
+		fakeBBS = &fake_bbs.FakeClient{}
+		fakeK8s = &unversionedfakes.FakeInterface{}
+		expectedNamespace = "linsun"
+		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
+		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
+		apiNS = &api.Namespace{
+			ObjectMeta: api.ObjectMeta{
+				Name: expectedNamespace,
+			},
+			Spec: api.NamespaceSpec{
+				Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+			},
+		}
 
 		responseRecorder = httptest.NewRecorder()
 
@@ -39,51 +57,73 @@ var _ = Describe("StopAppHandler", func() {
 	})
 
 	JustBeforeEach(func() {
-		stopAppHandler := handlers.NewStopAppHandler(logger, fakeBBS)
+		stopAppHandler := handlers.NewStopAppHandler(logger, fakeK8s)
 		stopAppHandler.StopApp(responseRecorder, request)
 	})
 
-	It("invokes the bbs to delete the app", func() {
-		Expect(fakeBBS.RemoveDesiredLRPCallCount()).To(Equal(1))
-		_, desiredLRP := fakeBBS.RemoveDesiredLRPArgsForCall(0)
-		Expect(desiredLRP).To(Equal("process-guid"))
-	})
+	Context("when deleting the desired app", func() {
 
-	It("responds with 202 Accepted", func() {
-		Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-	})
+		Context("when the desired app exists", func() {
+			BeforeEach(func() {
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeNamespace.GetReturns(apiNS, nil)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.GetReturns(&api.ReplicationController{}, nil)
+			})
 
-	Context("when the bbs fails", func() {
-		BeforeEach(func() {
-			fakeBBS.RemoveDesiredLRPReturns(errors.New("oh no"))
+			It("invokes the kubernetes to delete the app", func() {
+				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
+				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
+				Expect(fakeReplicationController.DeleteCallCount()).To(Equal(1))
+				Expect(fakeReplicationController.DeleteArgsForCall(0)).To(Equal("process-guid"))
+			})
+
+			It("responds with 202 Accepted", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
+			})
 		})
 
-		It("responds with a ServiceUnavailabe error", func() {
-			Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
-		})
-	})
+		Context("when the desired app doesn't exist", func() {
+			BeforeEach(func() {
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeNamespace.GetReturns(apiNS, nil)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.GetReturns(nil, errors.New("RC not found"))
+			})
 
-	Context("when the process guid is missing", func() {
-		BeforeEach(func() {
-			request.Form.Del(":process_guid")
-		})
-
-		It("does not call the bbs", func() {
-			Expect(fakeBBS.RemoveDesiredLRPCallCount()).To(Equal(0))
-		})
-
-		It("responds with 400 Bad Request", func() {
-			Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
-		})
-	})
-
-	Context("when the lrp doesn't exist", func() {
-		BeforeEach(func() {
-			fakeBBS.RemoveDesiredLRPReturns(models.ErrResourceNotFound)
+			It("responds with a 404", func() {
+				Expect(fakeReplicationController.DeleteCallCount()).To(Equal(0))
+				Expect(responseRecorder.Code).To(Equal(http.StatusNotFound))
+			})
 		})
 
-		It("responds with a 404", func() {
-			Expect(responseRecorder.Code).To(Equal(http.StatusNotFound))
+		Context("when process-guid is missing in the request", func() {
+			BeforeEach(func() {
+				request.Form.Del(":process_guid")
+			})
+
+			It("does not call the kubernetes", func() {
+				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(0))
+			})
+
+			It("responds with 400 Bad Request", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
+			})
 		})
+
+		Context("when kubernetes failed", func() {
+			BeforeEach(func() {
+				fakeK8s.NamespacesReturns(fakeNamespace)
+				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.GetReturns(&api.ReplicationController{}, nil)
+				fakeReplicationController.DeleteReturns(errors.New("oh no"))
+			})
+
+			It("responds with a ServiceUnavailabe error", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
+			})
+		})
+
 	})
 })

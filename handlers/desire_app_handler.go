@@ -174,7 +174,7 @@ func (h *DesireAppHandler) updateDesiredApp(
 	_, err = k8sClient.ReplicationControllers(namespace).Update(newRC)
 
 	if err != nil {
-		logger.Fatal("failed-to-update-lrp", err)
+		logger.Error("failed-to-update-lrp", err)
 		return err
 	}
 
