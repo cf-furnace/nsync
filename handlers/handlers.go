@@ -5,9 +5,9 @@ import (
 
 	"k8s.io/kubernetes/pkg/client/unversioned"
 
-	"github.com/cf-furnace/nsync"
-	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs"
+	"github.com/cloudfoundry-incubator/nsync"
+	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/pivotal-golang/lager"
 	"github.com/tedsuo/rata"
 )

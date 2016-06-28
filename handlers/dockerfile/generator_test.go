@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cf-furnace/nsync/handlers/dockerfile"
+	"github.com/cloudfoundry-incubator/nsync/handlers/dockerfile"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )

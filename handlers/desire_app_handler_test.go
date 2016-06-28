@@ -11,13 +11,13 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 
-	"github.com/cf-furnace/nsync/bulk/fakes"
-	"github.com/cf-furnace/nsync/handlers"
-	"github.com/cf-furnace/nsync/handlers/transformer"
-	"github.com/cf-furnace/nsync/handlers/unversionedfakes"
-	"github.com/cf-furnace/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
+	"github.com/cloudfoundry-incubator/nsync/bulk/fakes"
+	"github.com/cloudfoundry-incubator/nsync/handlers"
+	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
+	"github.com/cloudfoundry-incubator/nsync/handlers/unversionedfakes"
+	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
 	"github.com/cloudfoundry/dropsonde/metrics"

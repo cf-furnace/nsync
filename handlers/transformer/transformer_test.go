@@ -3,8 +3,8 @@ package transformer_test
 import (
 	"os"
 
-	"github.com/cf-furnace/nsync/handlers/transformer"
 	"github.com/cloudfoundry-incubator/bbs/models"
+	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"

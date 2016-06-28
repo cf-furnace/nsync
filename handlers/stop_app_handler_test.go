@@ -8,9 +8,9 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 
-	"github.com/cf-furnace/nsync/handlers"
-	"github.com/cf-furnace/nsync/handlers/unversionedfakes"
 	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
+	"github.com/cloudfoundry-incubator/nsync/handlers"
+	"github.com/cloudfoundry-incubator/nsync/handlers/unversionedfakes"
 	"github.com/pivotal-golang/lager/lagertest"
 
 	. "github.com/onsi/ginkgo"

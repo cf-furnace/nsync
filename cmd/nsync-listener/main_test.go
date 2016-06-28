@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cf-furnace/nsync"
 	"github.com/cloudfoundry-incubator/bbs/models"
+	"github.com/cloudfoundry-incubator/nsync"
 	"github.com/gogo/protobuf/proto"
 	"github.com/hashicorp/consul/api"
 	. "github.com/onsi/ginkgo"

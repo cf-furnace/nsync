@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/cf-furnace/nsync/handlers"
 	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/cf-debug-server"
 	cf_lager "github.com/cloudfoundry-incubator/cf-lager"
@@ -16,6 +15,7 @@ import (
 	"github.com/cloudfoundry-incubator/consuladapter"
 	"github.com/cloudfoundry-incubator/diego-ssh/keys"
 	"github.com/cloudfoundry-incubator/locket"
+	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages/flags"
 	"github.com/hashicorp/consul/api"
 	"github.com/pivotal-golang/clock"
@@ -25,7 +25,7 @@ import (
 	"github.com/tedsuo/ifrit/http_server"
 	"github.com/tedsuo/ifrit/sigmon"
 
-	"github.com/cf-furnace/nsync/recipebuilder"
+	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry/dropsonde"
 
 	"k8s.io/kubernetes/pkg/client/restclient"

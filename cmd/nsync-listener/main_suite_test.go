@@ -33,7 +33,7 @@ func TestListener(t *testing.T) {
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {
-	listener, err := gexec.Build("github.com/cf-furnace/nsync/cmd/nsync-listener", "-race")
+	listener, err := gexec.Build("github.com/cloudfoundry-incubator/nsync/cmd/nsync-listener", "-race")
 	Expect(err).NotTo(HaveOccurred())
 
 	k8sCluster = "http://9.37.192.140:8080/"
