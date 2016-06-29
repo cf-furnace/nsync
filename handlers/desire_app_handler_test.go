@@ -63,7 +63,7 @@ var _ = Describe("DesireAppHandler", func() {
 				Name: expectedNamespace,
 			},
 			Spec: api.NamespaceSpec{
-				Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+				Finalizers: []api.FinalizerName{},
 			},
 		}
 
@@ -198,7 +198,7 @@ var _ = Describe("DesireAppHandler", func() {
 						Name: expectedNamespace,
 					},
 					Spec: api.NamespaceSpec{
-						Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+						Finalizers: []api.FinalizerName{},
 					},
 				}
 

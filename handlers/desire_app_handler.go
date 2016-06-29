@@ -117,7 +117,7 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string,
 				Name: namespace,
 			},
 			Spec: api.NamespaceSpec{
-				Finalizers: []api.FinalizerName{api.FinalizerName(namespace)},
+				Finalizers: []api.FinalizerName{},
 			},
 		}
 		_, err = k8sClient.Namespaces().Create(apiNS)
