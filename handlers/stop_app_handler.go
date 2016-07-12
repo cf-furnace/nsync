@@ -40,6 +40,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 
 	logger.Debug("removing-desired-lrp")
 	rc, err := h.k8sClient.ReplicationControllers(namespace).Get(processGuid)
+	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {
 		err = h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
 		if err != nil {

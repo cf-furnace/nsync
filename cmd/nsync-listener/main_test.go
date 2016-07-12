@@ -124,33 +124,11 @@ var _ = Describe("Nsync Listener", func() {
 			return httpClient.Do(req)
 		}
 
-		It("forwards the stop request to the BBS", func() {
-			deletedTheLRP := false
-
-			fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/remove",
-				ghttp.CombineHandlers(
-					ghttp.VerifyContentType("application/x-protobuf"),
-					func(w http.ResponseWriter, req *http.Request) {
-						body, err := ioutil.ReadAll(req.Body)
-						Expect(err).ShouldNot(HaveOccurred())
-						defer req.Body.Close()
-
-						protoMessage := &models.RemoveDesiredLRPRequest{}
-						err = proto.Unmarshal(body, protoMessage)
-						Expect(err).ToNot(HaveOccurred(), "Failed to unmarshal protobuf")
-
-						if protoMessage.ProcessGuid == "the-guid" {
-							deletedTheLRP = true
-						}
-					},
-				),
-			)
-
-			stopResponse, err := stopApp("the-guid")
+		It("Process stop request with no error", func() {
+			stopResponse, err := stopApp("myapp")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(stopResponse.StatusCode).To(Equal(http.StatusAccepted))
-			Expect(deletedTheLRP).To(BeTrue())
 		})
 	})
 

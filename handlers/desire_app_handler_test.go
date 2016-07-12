@@ -124,9 +124,9 @@ var _ = Describe("DesireAppHandler", func() {
 		Context("when the namespace is missing", func() {
 			BeforeEach(func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(nil, errors.New("namespace doesn't exist yet"))
+				fakeNamespace.GetReturns(nil, errors.New("namespaces \""+expectedNamespace+"\" not found"))
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
 			})
 
 			It("creates the namespace", func() {
@@ -146,6 +146,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
 			})
 
 			It("creates the desired LRP - replication controllers", func() {
@@ -205,6 +206,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
 			})
 
 			It("creates the desired LRP in kubernetes", func() {

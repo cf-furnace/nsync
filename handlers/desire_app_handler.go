@@ -60,6 +60,9 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	for _, envVar := range desiredApp.Environment {
 		envNames = append(envNames, envVar.Name)
 	}
+	/*sample data
+	{"keys":["VCAP_APPLICATION","MEMORY_LIMIT","VCAP_SERVICES"],"method":"PUT","process_guid":"e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b","request":"/v1/apps/e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b?%3Aprocess_guid=e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b\u0026","session":"2"}}
+	*/
 	logger.Debug("environment", lager.Data{"keys": envNames})
 
 	if processGuid != desiredApp.ProcessGuid {
@@ -71,15 +74,15 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	statusCode := http.StatusConflict
 	for tries := 2; tries > 0 && statusCode == http.StatusConflict; tries-- {
 		existingRC, err := h.getDesiredRC(logger, processGuid, namespace)
-		if err != nil {
+
+		if err == nil && existingRC != nil {
+			err = h.updateDesiredApp(logger, existingRC, desiredApp)
+		} else if err != nil && err.Error() == "replicationcontrollers \""+processGuid+"\" not found" {
+			err = h.createDesiredApp(logger, desiredApp)
+		} else {
+			logger.Error("Unable to create or update desired app ", err)
 			statusCode = http.StatusServiceUnavailable
 			break
-		}
-
-		if existingRC != nil {
-			err = h.updateDesiredApp(logger, existingRC, desiredApp)
-		} else {
-			err = h.createDesiredApp(logger, desiredApp)
 		}
 
 		if err != nil {
@@ -102,6 +105,7 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 		}
 	}
 
+	logger.Debug("statusCode", lager.Data{"statusCode": statusCode})
 	resp.WriteHeader(statusCode)
 }
 
@@ -111,7 +115,8 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string,
 	var err error
 
 	_, err = k8sClient.Namespaces().Get(namespace)
-	if err != nil {
+
+	if err != nil && err.Error() == "namespaces \""+namespace+"\" not found" {
 		apiNS := &api.Namespace{
 			ObjectMeta: api.ObjectMeta{
 				Name: namespace,
@@ -127,11 +132,8 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string,
 	}
 
 	rc, err := k8sClient.ReplicationControllers(namespace).Get(processGuid)
-	if err != nil {
-		logger.Error("Not able to find the RC", err)
-		return nil, err
-	}
-	return rc, nil
+
+	return rc, err
 }
 
 func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC) error {
@@ -181,47 +183,6 @@ func (h *DesireAppHandler) updateDesiredApp(
 	logger.Debug("updated-desired-lrp")
 
 	return nil
-
-	/*var builder recipebuilder.RecipeBuilder = h.recipeBuilders["buildpack"]
-	if desireAppMessage.DockerImageUrl != "" {
-		builder = h.recipeBuilders["docker"]
-	}
-	ports, err := builder.ExtractExposedPorts(&desireAppMessage)
-	if err != nil {
-		logger.Error("failed to-get-exposed-port", err)
-		return err
-	}
-
-	updateRoutes, err := helpers.CCRouteInfoToRoutes(desireAppMessage.RoutingInfo, ports)
-	if err != nil {
-		logger.Error("failed-to-marshal-routes", err)
-		return err
-	}
-
-	routes := existingLRP.Routes
-	if routes == nil {
-		routes = &models.Routes{}
-	}
-
-	if value, ok := updateRoutes[cfroutes.CF_ROUTER]; ok {
-		(*routes)[cfroutes.CF_ROUTER] = value
-	}
-	if value, ok := updateRoutes[tcp_routes.TCP_ROUTER]; ok {
-		(*routes)[tcp_routes.TCP_ROUTER] = value
-	}
-	instances := int32(desireAppMessage.NumInstances)
-	updateRequest := &models.DesiredLRPUpdate{
-		Annotation: &desireAppMessage.ETag,
-		Instances:  &instances,
-		Routes:     routes,
-	}
-
-	logger.Debug("updating-desired-lrp", lager.Data{"routes": sanitizeRoutes(existingLRP.Routes)})
-	err = h.bbsClient.UpdateDesiredLRP(logger, desireAppMessage.ProcessGuid, updateRequest)
-	if err != nil {
-		logger.Error("failed-to-update-lrp", err)
-		return err
-	}*/
 }
 
 func sanitizeRoutes(routes *models.Routes) *models.Routes {
