@@ -54,16 +54,24 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	logger.Info("request-from-cc", lager.Data{"desired-app": desiredApp})
+
 	logger.Info("request-from-cc", lager.Data{"routing_info": desiredApp.RoutingInfo})
 
 	envNames := []string{}
+	var vcapServices string
 	for _, envVar := range desiredApp.Environment {
 		envNames = append(envNames, envVar.Name)
+		if envVar.Name == "VCAP_SERVICES" {
+			vcapServices = envVar.Value
+		}
 	}
 	/*sample data
 	{"keys":["VCAP_APPLICATION","MEMORY_LIMIT","VCAP_SERVICES"],"method":"PUT","process_guid":"e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b","request":"/v1/apps/e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b?%3Aprocess_guid=e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b\u0026","session":"2"}}
 	*/
-	logger.Debug("environment", lager.Data{"keys": envNames})
+	logger.Debug("environment", lager.Data{"environment": envNames})
+	logger.Debug("environment keys", lager.Data{"keys": desiredApp.Environment})
+	logger.Debug("environment vcap_services", lager.Data{"VCAP_SERVICES": vcapServices})
 
 	if processGuid != desiredApp.ProcessGuid {
 		logger.Error("process-guid-mismatch", err, lager.Data{"body-process-guid": desiredApp.ProcessGuid})
