@@ -89,7 +89,7 @@ var _ = Describe("StopAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("RC not found"))
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"process-guid\" not found"))
 			})
 
 			It("responds with a 404", func() {

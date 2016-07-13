@@ -42,16 +42,22 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	rc, err := h.k8sClient.ReplicationControllers(namespace).Get(processGuid)
 	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {
-		err = h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
-		if err != nil {
-			logger.Error("failed-to-remove-desired-lrp", err)
+		if err != nil && err.Error() == "replicationcontrollers \""+processGuid+"\" not found" {
+			logger.Debug("desired-lrp not found")
+			resp.WriteHeader(http.StatusNotFound)
+		} else {
+			err = h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
+			if err != nil {
+				logger.Error("failed-to-remove-desired-lrp", err)
 
-			resp.WriteHeader(http.StatusServiceUnavailable)
-			return
+				resp.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			logger.Debug("removed-desired-lrp")
+
+			resp.WriteHeader(http.StatusAccepted)
 		}
-		logger.Debug("removed-desired-lrp")
 
-		resp.WriteHeader(http.StatusAccepted)
 	} else {
 		logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
 		resp.WriteHeader(http.StatusNotFound)
