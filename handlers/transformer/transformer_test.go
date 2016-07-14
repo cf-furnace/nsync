@@ -74,22 +74,8 @@ var _ = Describe("Transformer", func() {
 					},
 					Spec: api.PodSpec{
 						Containers: []api.Container{{
-							Name:  rcGUID + "-d",
-							Image: "localhost:5000/linsun/" + rcGUID + "-d:latest",
-							Lifecycle: &api.Lifecycle{
-								PostStart: &api.Handler{
-									Exec: &api.ExecAction{
-										Command: []string{"cp", "/droplet.tgz", "/app"},
-									},
-								},
-							},
-							VolumeMounts: []api.VolumeMount{{
-								Name:      "app-volume",
-								MountPath: "/app",
-							}},
-						}, {
 							Name:  rcGUID + "-r",
-							Image: "localhost:5000/default/k8s-runner:latest",
+							Image: "linsun/k8s-runner:latest",
 							Env: []api.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
 								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2"},
@@ -97,14 +83,14 @@ var _ = Describe("Transformer", func() {
 								{Name: "DROPLETURI", Value: "source-url-1"},
 							},
 							VolumeMounts: []api.VolumeMount{{
-								Name:      "app-volume",
-								MountPath: "/app/droplet",
+								Name:      "etc-hosts-volume",
+								MountPath: "/etc/hosts",
 							}},
 						}},
 						Volumes: []api.Volume{{
-							Name: "app-volume",
+							Name: "etc-hosts-volume",
 							VolumeSource: api.VolumeSource{
-								EmptyDir: &api.EmptyDirVolumeSource{},
+								HostPath: &api.HostPathVolumeSource{Path: "/tmp/vcap/etc/hosts"},
 							},
 						}},
 					}},

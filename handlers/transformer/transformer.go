@@ -69,22 +69,8 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 				},
 				Spec: api.PodSpec{
 					Containers: []api.Container{{
-						Name:  fmt.Sprintf("%s-d", rcGUID),
-						Image: fmt.Sprintf("localhost:5000/linsun/%s-d:latest", rcGUID),
-						Lifecycle: &api.Lifecycle{
-							PostStart: &api.Handler{
-								Exec: &api.ExecAction{
-									Command: []string{"cp", "/droplet.tgz", "/app"},
-								},
-							},
-						},
-						VolumeMounts: []api.VolumeMount{{
-							Name:      "app-volume",
-							MountPath: "/app",
-						}},
-					}, {
 						Name:  fmt.Sprintf("%s-r", rcGUID),
-						Image: "localhost:5000/default/k8s-runner:latest",
+						Image: "linsun/k8s-runner:latest",
 						Env: []api.EnvVar{
 							{Name: "STARTCMD", Value: desiredApp.StartCommand},
 							{Name: "ENVVARS", Value: env},
@@ -92,14 +78,14 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 							{Name: "DROPLETURI", Value: dropletURI},
 						},
 						VolumeMounts: []api.VolumeMount{{
-							Name:      "app-volume",
-							MountPath: "/app/droplet",
+							Name:      "etc-hosts-volume",
+							MountPath: "/etc/hosts",
 						}},
 					}},
 					Volumes: []api.Volume{{
-						Name: "app-volume",
+						Name: "etc-hosts-volume",
 						VolumeSource: api.VolumeSource{
-							EmptyDir: &api.EmptyDirVolumeSource{},
+							HostPath: &api.HostPathVolumeSource{Path: "/tmp/vcap/etc/hosts"},
 						},
 					}},
 				},
