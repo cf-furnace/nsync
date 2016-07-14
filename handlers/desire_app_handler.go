@@ -85,7 +85,7 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 
 	// kube requires replication controller name < 63
 	if len(desiredApp.ProcessGuid) >= 63 {
-		rcGUID = desiredApp.ProcessGuid[:62]
+		rcGUID = desiredApp.ProcessGuid[:60]
 	} else {
 		rcGUID = desiredApp.ProcessGuid
 	}

@@ -48,7 +48,7 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 
 	// kube requires replication controller name < 63
 	if len(desiredApp.ProcessGuid) >= 63 {
-		rcGUID = desiredApp.ProcessGuid[:62]
+		rcGUID = desiredApp.ProcessGuid[:60]
 	} else {
 		rcGUID = desiredApp.ProcessGuid
 	}
@@ -67,8 +67,8 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 				},
 				Spec: api.PodSpec{
 					Containers: []api.Container{{
-						Name:  fmt.Sprintf("%s-data", rcGUID),
-						Image: fmt.Sprintf("localhost:5000/linsun/%s-data:latest", rcGUID),
+						Name:  fmt.Sprintf("%s-d", rcGUID),
+						Image: fmt.Sprintf("localhost:5000/linsun/%s-d:latest", rcGUID),
 						Lifecycle: &api.Lifecycle{
 							PostStart: &api.Handler{
 								Exec: &api.ExecAction{
@@ -81,7 +81,7 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 							MountPath: "/app",
 						}},
 					}, {
-						Name:  fmt.Sprintf("%s-runner", rcGUID),
+						Name:  fmt.Sprintf("%s-r", rcGUID),
 						Image: "localhost:5000/default/k8s-runner:latest",
 						Env: []api.EnvVar{
 							{Name: "STARTCMD", Value: desiredApp.StartCommand},
@@ -123,8 +123,8 @@ func DesiredAppImageToRC(logger lager.Logger, desiredApp cc_messages.DesireAppRe
 	}
 
 	// kube requires replication controller name < 63
-	if len(desiredApp.ProcessGuid) >= 63 {
-		rcGUID = desiredApp.ProcessGuid[:62]
+	if len(desiredApp.ProcessGuid) >= 60 {
+		rcGUID = desiredApp.ProcessGuid[:60]
 	} else {
 		rcGUID = desiredApp.ProcessGuid
 	}

@@ -44,7 +44,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 
 	// kube requires replication controller name < 63
 	if len(processGuid) >= 63 {
-		rcGUID = processGuid[:62]
+		rcGUID = processGuid[:60]
 	} else {
 		rcGUID = processGuid
 	}

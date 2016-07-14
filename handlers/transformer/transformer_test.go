@@ -59,7 +59,7 @@ var _ = Describe("Transformer", func() {
 			Ports:           []uint32{8080},
 		}
 
-		rcGUID := "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651"[:62]
+		rcGUID := "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651"[:60]
 		expectedRC = &api.ReplicationController{
 			ObjectMeta: api.ObjectMeta{
 				Name: rcGUID,
@@ -74,8 +74,8 @@ var _ = Describe("Transformer", func() {
 					},
 					Spec: api.PodSpec{
 						Containers: []api.Container{{
-							Name:  rcGUID + "-data",
-							Image: "localhost:5000/linsun/" + rcGUID + "-data:latest",
+							Name:  rcGUID + "-d",
+							Image: "localhost:5000/linsun/" + rcGUID + "-d:latest",
 							Lifecycle: &api.Lifecycle{
 								PostStart: &api.Handler{
 									Exec: &api.ExecAction{
@@ -88,7 +88,7 @@ var _ = Describe("Transformer", func() {
 								MountPath: "/app",
 							}},
 						}, {
-							Name:  rcGUID + "-runner",
+							Name:  rcGUID + "-r",
 							Image: "localhost:5000/default/k8s-runner:latest",
 							Env: []api.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
