@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/cloudfoundry-incubator/bbs/models"
@@ -18,7 +19,6 @@ import (
 
 const (
 	desiredLRPCounter = metric.Counter("LRPsDesired")
-	namespace         = "linsun" // TODO need to figure out how to get namespace
 )
 
 type DesireAppHandler struct {
@@ -59,11 +59,15 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	logger.Info("request-from-cc", lager.Data{"routing_info": desiredApp.RoutingInfo})
 
 	envNames := []string{}
-	var vcapServices string
+	var vcapApp string
+	var rcGUID string
+	var ok bool
+	var spaceID string
+
 	for _, envVar := range desiredApp.Environment {
 		envNames = append(envNames, envVar.Name)
-		if envVar.Name == "VCAP_SERVICES" {
-			vcapServices = envVar.Value
+		if envVar.Name == "VCAP_APPLICATION" {
+			vcapApp = envVar.Value
 		}
 	}
 	/*sample data
@@ -71,7 +75,25 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	*/
 	logger.Debug("environment", lager.Data{"environment": envNames})
 	logger.Debug("environment keys", lager.Data{"keys": desiredApp.Environment})
-	logger.Debug("environment vcap_services", lager.Data{"VCAP_SERVICES": vcapServices})
+	logger.Debug("environment vcap_application", lager.Data{"VCAP_APPLICATION": vcapApp})
+
+	m := map[string]string{}
+	errUnmarshal := json.Unmarshal([]byte(vcapApp), &m)
+	if errUnmarshal != nil {
+		logger.Error("failed to unmarshal vcapApp", errUnmarshal, lager.Data{"VCAP_APPLICATION": vcapApp})
+	}
+
+	// kube requires replication controller name < 63
+	if len(desiredApp.ProcessGuid) >= 63 {
+		rcGUID = desiredApp.ProcessGuid[:62]
+	} else {
+		rcGUID = desiredApp.ProcessGuid
+	}
+
+	spaceID, ok = m["space_id"]
+	if ok == false {
+		logger.Error("unable to find space_id in environment vcap_application", errors.New("unable to find space_id"))
+	}
 
 	if processGuid != desiredApp.ProcessGuid {
 		logger.Error("process-guid-mismatch", err, lager.Data{"body-process-guid": desiredApp.ProcessGuid})
@@ -81,12 +103,12 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 
 	statusCode := http.StatusConflict
 	for tries := 2; tries > 0 && statusCode == http.StatusConflict; tries-- {
-		existingRC, err := h.getDesiredRC(logger, processGuid, namespace)
+		existingRC, err := h.getDesiredRC(logger, rcGUID, spaceID)
 
 		if err == nil && existingRC != nil {
-			err = h.updateDesiredApp(logger, existingRC, desiredApp)
-		} else if err != nil && err.Error() == "replicationcontrollers \""+processGuid+"\" not found" {
-			err = h.createDesiredApp(logger, desiredApp)
+			err = h.updateDesiredApp(logger, existingRC, desiredApp, spaceID)
+		} else if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
+			err = h.createDesiredApp(logger, desiredApp, spaceID)
 		} else {
 			logger.Error("Unable to create or update desired app ", err)
 			statusCode = http.StatusServiceUnavailable
@@ -144,7 +166,7 @@ func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string,
 	return rc, err
 }
 
-func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC) error {
+func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC, namespace string) error {
 	logger = logger.Session("creating-desired-lrp")
 	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
 	if err != nil {
@@ -167,6 +189,7 @@ func (h *DesireAppHandler) updateDesiredApp(
 	logger lager.Logger,
 	existingRC *api.ReplicationController,
 	desireAppMessage cc_messages.DesireAppRequestFromCC,
+	namespace string,
 ) error {
 	k8sClient := h.k8sClient
 	var err error

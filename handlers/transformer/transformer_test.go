@@ -21,13 +21,15 @@ var _ = Describe("Transformer", func() {
 
 	BeforeEach(func() {
 		desiredApp = cc_messages.DesireAppRequestFromCC{
-			ProcessGuid:  "process-guid-1",
+			ProcessGuid:  "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651",
 			DropletUri:   "source-url-1",
 			Stack:        "stack-1",
 			StartCommand: "start-command-1",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "env-key-1", Value: "env-value-1"},
 				{Name: "env-key-2", Value: "env-value-2"},
+				{Name: "VCAP_APPLICATION", Value: "{\"application_name\":\"dora\",\"application_uris\":[\"dora.bosh-lite.com\"],\"name\":\"dora\",\"space_name\":\"diego\",\"space_id\":\"c99b5d70-3b63-4cda-b15c-fd9dc147967b\",\"uris\":[\"dora.bosh-lite.com\"],\"application_id\":\"e9640a75-9ddf-4351-bccd-21264640c156\",\"version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\",\"application_version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\"}"},
+				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        256,
 			DiskMB:          1024,
@@ -39,12 +41,14 @@ var _ = Describe("Transformer", func() {
 		}
 
 		desiredApp2 = cc_messages.DesireAppRequestFromCC{
-			ProcessGuid:    "process-guid-1",
+			ProcessGuid:    "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651",
 			DockerImageUrl: "test/ubuntu:latest",
 			StartCommand:   "start-command-1",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "env-key-1", Value: "env-value-1"},
 				{Name: "env-key-2", Value: "env-value-2"},
+				{Name: "VCAP_APPLICATION", Value: "{\"application_name\":\"dora\",\"application_uris\":[\"dora.bosh-lite.com\"],\"name\":\"dora\",\"space_name\":\"diego\",\"space_id\":\"c99b5d70-3b63-4cda-b15c-fd9dc147967b\",\"uris\":[\"dora.bosh-lite.com\"],\"application_id\":\"e9640a75-9ddf-4351-bccd-21264640c156\",\"version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\",\"application_version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\"}"},
+				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        256,
 			DiskMB:          1024,
@@ -55,22 +59,23 @@ var _ = Describe("Transformer", func() {
 			Ports:           []uint32{8080},
 		}
 
+		rcGUID := "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651"[:62]
 		expectedRC = &api.ReplicationController{
 			ObjectMeta: api.ObjectMeta{
-				Name: "process-guid-1",
+				Name: rcGUID,
 			},
 			Spec: api.ReplicationControllerSpec{
 				Replicas: int32(desiredApp.NumInstances),
-				Selector: map[string]string{"name": "process-guid-1"},
+				Selector: map[string]string{"name": rcGUID},
 				Template: &api.PodTemplateSpec{
 					ObjectMeta: api.ObjectMeta{
-						Name:   "process-guid-1",
-						Labels: map[string]string{"name": "process-guid-1"},
+						Name:   rcGUID,
+						Labels: map[string]string{"name": rcGUID},
 					},
 					Spec: api.PodSpec{
 						Containers: []api.Container{{
-							Name:  "process-guid-1-data",
-							Image: "localhost:5000/linsun/process-guid-1-data:latest",
+							Name:  rcGUID + "-data",
+							Image: "localhost:5000/linsun/" + rcGUID + "-data:latest",
 							Lifecycle: &api.Lifecycle{
 								PostStart: &api.Handler{
 									Exec: &api.ExecAction{
@@ -83,12 +88,13 @@ var _ = Describe("Transformer", func() {
 								MountPath: "/app",
 							}},
 						}, {
-							Name:  "process-guid-1-runner",
+							Name:  rcGUID + "-runner",
 							Image: "localhost:5000/default/k8s-runner:latest",
 							Env: []api.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
 								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2"},
 								{Name: "PORT", Value: "8080"},
+								{Name: "DROPLETURI", Value: "source-url-1"},
 							},
 							VolumeMounts: []api.VolumeMount{{
 								Name:      "app-volume",
@@ -107,19 +113,19 @@ var _ = Describe("Transformer", func() {
 
 		expectedRC2 = &api.ReplicationController{
 			ObjectMeta: api.ObjectMeta{
-				Name: "process-guid-1",
+				Name: rcGUID,
 			},
 			Spec: api.ReplicationControllerSpec{
 				Replicas: int32(desiredApp.NumInstances),
-				Selector: map[string]string{"name": "process-guid-1"},
+				Selector: map[string]string{"name": rcGUID},
 				Template: &api.PodTemplateSpec{
 					ObjectMeta: api.ObjectMeta{
-						Name:   "process-guid-1",
-						Labels: map[string]string{"name": "process-guid-1"},
+						Name:   rcGUID,
+						Labels: map[string]string{"name": rcGUID},
 					},
 					Spec: api.PodSpec{
 						Containers: []api.Container{{
-							Name:  "process-guid-1",
+							Name:  rcGUID,
 							Image: "test/ubuntu:latest",
 							Env: []api.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},

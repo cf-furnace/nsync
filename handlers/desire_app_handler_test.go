@@ -55,7 +55,7 @@ var _ = Describe("DesireAppHandler", func() {
 		fakeK8s = &unversionedfakes.FakeInterface{}
 		buildpackBuilder = new(fakes.FakeRecipeBuilder)
 		dockerBuilder = new(fakes.FakeRecipeBuilder)
-		expectedNamespace = "linsun"
+		expectedNamespace = "my-space-id"
 		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
 		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 		apiNS = &api.Namespace{
@@ -80,7 +80,8 @@ var _ = Describe("DesireAppHandler", func() {
 			StartCommand: "the-start-command",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "foo", Value: "bar"},
-				{Name: "VCAP_APPLICATION", Value: "{\"application_name\":\"my-app\"}"},
+				{Name: "VCAP_APPLICATION", Value: "{\"application_name\":\"my-app\", \"space_id\":\"my-space-id\", \"application_id\": \"my-very-long-application-id\"}"},
+				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        128,
 			DiskMB:          512,

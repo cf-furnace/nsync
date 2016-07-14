@@ -30,7 +30,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	})
 
 	if processGuid == "" {
-		logger.Error("missing-process-guid", missingParameterErr)
+		h.logger.Error("missing-process-guid", missingParameterErr)
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -39,27 +39,40 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	defer logger.Info("complete")
 
 	logger.Debug("removing-desired-lrp")
-	rc, err := h.k8sClient.ReplicationControllers(namespace).Get(processGuid)
+
+	var rcGUID string
+
+	// kube requires replication controller name < 63
+	if len(processGuid) >= 63 {
+		rcGUID = processGuid[:62]
+	} else {
+		rcGUID = processGuid
+	}
+
+	// TODO: decide how to get spaceID.
+	spaceID := "linsun"
+
+	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
 	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {
-		if err != nil && err.Error() == "replicationcontrollers \""+processGuid+"\" not found" {
-			logger.Debug("desired-lrp not found")
+		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
+			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
 		} else {
-			err = h.k8sClient.ReplicationControllers(namespace).Delete(processGuid)
+			err = h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID)
 			if err != nil {
-				logger.Error("failed-to-remove-desired-lrp", err)
+				h.logger.Error("failed-to-remove-desired-lrp", err)
 
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
-			logger.Debug("removed-desired-lrp")
+			h.logger.Debug("removed-desired-lrp")
 
 			resp.WriteHeader(http.StatusAccepted)
 		}
 
 	} else {
-		logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
+		h.logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
 		resp.WriteHeader(http.StatusNotFound)
 		return
 	}
