@@ -36,6 +36,8 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 	var env string
 	var rcGUID string
 
+	// TODO: remove this hack...
+	dropletURI := strings.Replace(desiredApp.DropletUri, "cloud-controller-ng.service.cf.internal", "10.244.0.138", 1)
 	for _, envVar := range desiredApp.Environment {
 		if envVar.Name == "VCAP_APPLICATION" {
 			// ignore for now
@@ -87,7 +89,7 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 							{Name: "STARTCMD", Value: desiredApp.StartCommand},
 							{Name: "ENVVARS", Value: env},
 							{Name: "PORT", Value: "8080"},
-							{Name: "DROPLETURI", Value: desiredApp.DropletUri},
+							{Name: "DROPLETURI", Value: dropletURI},
 						},
 						VolumeMounts: []api.VolumeMount{{
 							Name:      "app-volume",

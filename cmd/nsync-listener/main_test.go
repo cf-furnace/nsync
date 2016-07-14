@@ -46,7 +46,9 @@ var _ = Describe("Nsync Listener", func() {
 			"start_command": "npm start",
 			"environment": [
 				{"name": "HOST", "value": "0.0.0.0"},
-				{"name": "env-key-2", "value": "env-value-2"}
+				{"name": "env-key-2", "value": "env-value-2"},
+				{"name": "VCAP_APPLICATION", "value": "{\"application_name\":\"dora\",\"application_uris\":[\"dora.bosh-lite.com\"],\"name\":\"dora\",\"space_name\":\"diego\",\"space_id\":\"c99b5d70-3b63-4cda-b15c-fd9dc147967b\",\"uris\":[\"dora.bosh-lite.com\"],\"application_id\":\"e9640a75-9ddf-4351-bccd-21264640c156\",\"version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\",\"application_version\":\"c542db92-6d3a-43c6-b975-f8a7501ac651\"}"},
+				{"name": "VCAP_SERVICES", "value": "{}"}
 			],
 			"memory_mb":        256,
 			"disk_mb":          1024,
@@ -128,7 +130,8 @@ var _ = Describe("Nsync Listener", func() {
 			stopResponse, err := stopApp("myapp")
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(stopResponse.StatusCode).To(Equal(http.StatusAccepted))
+			// TODO: needs to differentiate 404 and StatusAccepted
+			Expect(stopResponse.StatusCode).To(Equal(http.StatusNotFound))
 		})
 	})
 

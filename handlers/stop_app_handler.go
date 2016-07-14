@@ -29,6 +29,17 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 		"request":      req.URL.String(),
 	})
 
+	/*if req.Body != nil {
+		stopApp := cc_messages.DesireAppRequestFromCC{}
+		err := json.NewDecoder(req.Body).Decode(&stopApp)
+		if err != nil {
+			logger.Error("parse-stop-app-request-failed", err)
+			resp.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		logger.Info("stop-request-from-cc", lager.Data{"stop-app": stopApp})
+	}*/
+
 	if processGuid == "" {
 		h.logger.Error("missing-process-guid", missingParameterErr)
 		resp.WriteHeader(http.StatusBadRequest)
