@@ -1,7 +1,9 @@
 package transformer
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
@@ -54,6 +56,32 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 	} else {
 		rcGUID = desiredApp.ProcessGuid
 	}
+
+	routingInfo := desiredApp.RoutingInfo
+
+	httpRoutes, ok := routingInfo[cc_messages.CC_HTTP_ROUTES]
+	if ok == false {
+		logger.Debug("unable to find http_routes in desiredApp, not setting PORT env var")
+	} else {
+		logger.Debug("found http_routes in desiredApp, setting PORT env var", lager.Data{"httpRoutes": httpRoutes})
+
+		var routes []cc_messages.CCHTTPRoute
+		err1 := json.Unmarshal(*httpRoutes, &routes)
+		if err1 != nil {
+			logger.Error("failed to unmarshal http routes", err1, lager.Data{"routes": routes})
+		}
+
+		for _, route := range routes {
+			port := route.Port
+			if port != 0x0 {
+				env = strings.TrimPrefix(fmt.Sprintf("%s,%s=%s", env, "PORT", strconv.FormatUint(uint64(port), 10)), ",")
+				break
+			}
+		}
+
+	}
+
+	// grab first port and set it as env var
 
 	rc := &api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{

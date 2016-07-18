@@ -80,7 +80,7 @@ var _ = Describe("DesireAppHandler", func() {
 			StartCommand: "the-start-command",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "foo", Value: "bar"},
-				{Name: "VCAP_APPLICATION", Value: "{\"application_name\":\"my-app\", \"space_id\":\"my-space-id\", \"application_id\": \"my-very-long-application-id\"}"},
+				{Name: "VCAP_APPLICATION", Value: "{\"limits\":{\"fds\":16384,\"mem\":256,\"disk\":1024}, \"application_name\":\"my-app\", \"application_uris\":[\"dora.bosh-lite.com\"], \"space_id\":\"my-space-id\", \"application_id\": \"my-very-long-application-id\"}"},
 				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        128,

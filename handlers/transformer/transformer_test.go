@@ -20,6 +20,13 @@ var _ = Describe("Transformer", func() {
 	logger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.DEBUG))
 
 	BeforeEach(func() {
+		routingInfo, err := cc_messages.CCHTTPRoutes{
+			{Hostname: "route1", Port: 8080},
+			{Hostname: "route2"},
+		}.CCRouteInfo()
+
+		Expect(err).NotTo(HaveOccurred())
+
 		desiredApp = cc_messages.DesireAppRequestFromCC{
 			ProcessGuid:  "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651",
 			DropletUri:   "source-url-1",
@@ -38,6 +45,7 @@ var _ = Describe("Transformer", func() {
 			LogGuid:         "log-guid-1",
 			ETag:            "1234567.1890",
 			Ports:           []uint32{8080},
+			RoutingInfo:     routingInfo,
 		}
 
 		desiredApp2 = cc_messages.DesireAppRequestFromCC{
@@ -78,7 +86,7 @@ var _ = Describe("Transformer", func() {
 							Image: "linsun/k8s-runner:latest",
 							Env: []api.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
-								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2"},
+								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2,PORT=8080"},
 								{Name: "PORT", Value: "8080"},
 								{Name: "DROPLETURI", Value: "source-url-1"},
 							},
