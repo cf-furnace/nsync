@@ -90,16 +90,6 @@ var _ = Describe("Transformer", func() {
 								{Name: "PORT", Value: "8080"},
 								{Name: "DROPLETURI", Value: "source-url-1"},
 							},
-							VolumeMounts: []api.VolumeMount{{
-								Name:      "etc-hosts-volume",
-								MountPath: "/etc/hosts",
-							}},
-						}},
-						Volumes: []api.Volume{{
-							Name: "etc-hosts-volume",
-							VolumeSource: api.VolumeSource{
-								HostPath: &api.HostPathVolumeSource{Path: "/tmp/vcap/etc/hosts"},
-							},
 						}},
 					}},
 			},
