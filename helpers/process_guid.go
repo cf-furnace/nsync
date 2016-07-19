@@ -35,12 +35,16 @@ func NewProcessGuid(guid string) (ProcessGuid, error) {
 }
 
 func (pg ProcessGuid) ShortenedGuid() string {
-	shortAppGuid := base32.StdEncoding.EncodeToString(pg.AppGuid[:])
-	shortAppVersion := base32.StdEncoding.EncodeToString(pg.AppVersion[:])
+	shortAppGuid := trimPadding(base32.StdEncoding.EncodeToString(pg.AppGuid[:]))
+	shortAppVersion := trimPadding(base32.StdEncoding.EncodeToString(pg.AppVersion[:]))
 
-	return strings.ToLower(strings.TrimRight(shortAppGuid, "=") + "-" + strings.TrimRight(shortAppVersion, "="))
+	return strings.ToLower(shortAppGuid + "-" + shortAppVersion)
 }
 
 func (pg ProcessGuid) String() string {
 	return pg.AppGuid.String() + "-" + pg.AppVersion.String()
+}
+
+func trimPadding(s string) string {
+	return strings.TrimRight(s, "=")
 }
