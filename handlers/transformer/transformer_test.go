@@ -1,23 +1,23 @@
 package transformer_test
 
 import (
-	"os"
-
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/pivotal-golang/lager"
-	"k8s.io/kubernetes/pkg/api"
+	"github.com/pivotal-golang/lager/lagertest"
+	"k8s.io/kubernetes/pkg/api/v1"
 )
 
 var _ = Describe("Transformer", func() {
-	var desiredApp, desiredApp2 cc_messages.DesireAppRequestFromCC
-	//var expectedPod *api.Pod
-	var expectedRC, expectedRC2 *api.ReplicationController
-	logger := lager.NewLogger("transformer_test")
-	logger.RegisterSink(lager.NewWriterSink(os.Stderr, lager.DEBUG))
+	var (
+		desiredApp, desiredApp2 cc_messages.DesireAppRequestFromCC
+		expectedRC, expectedRC2 *v1.ReplicationController
+
+		logger *lagertest.TestLogger
+	)
 
 	BeforeEach(func() {
 		routingInfo, err := cc_messages.CCHTTPRoutes{
@@ -67,24 +67,27 @@ var _ = Describe("Transformer", func() {
 			Ports:           []uint32{8080},
 		}
 
-		rcGUID := "e9640a75-9ddf-4351-bccd-21264640c156-c542db92-6d3a-43c6-b975-f8a7501ac651"[:60]
-		expectedRC = &api.ReplicationController{
-			ObjectMeta: api.ObjectMeta{
+		processGuid, err := helpers.NewProcessGuid(desiredApp.ProcessGuid)
+		Expect(err).NotTo(HaveOccurred())
+		rcGUID := processGuid.ShortenedGuid()
+
+		expectedRC = &v1.ReplicationController{
+			ObjectMeta: v1.ObjectMeta{
 				Name: rcGUID,
 			},
-			Spec: api.ReplicationControllerSpec{
-				Replicas: int32(desiredApp.NumInstances),
+			Spec: v1.ReplicationControllerSpec{
+				Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
 				Selector: map[string]string{"name": rcGUID},
-				Template: &api.PodTemplateSpec{
-					ObjectMeta: api.ObjectMeta{
+				Template: &v1.PodTemplateSpec{
+					ObjectMeta: v1.ObjectMeta{
 						Name:   rcGUID,
 						Labels: map[string]string{"name": rcGUID},
 					},
-					Spec: api.PodSpec{
-						Containers: []api.Container{{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{
 							Name:  rcGUID + "-r",
 							Image: "linsun/k8s-runner:latest",
-							Env: []api.EnvVar{
+							Env: []v1.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
 								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2,PORT=8080"},
 								{Name: "PORT", Value: "8080"},
@@ -95,23 +98,23 @@ var _ = Describe("Transformer", func() {
 			},
 		}
 
-		expectedRC2 = &api.ReplicationController{
-			ObjectMeta: api.ObjectMeta{
+		expectedRC2 = &v1.ReplicationController{
+			ObjectMeta: v1.ObjectMeta{
 				Name: rcGUID,
 			},
-			Spec: api.ReplicationControllerSpec{
-				Replicas: int32(desiredApp.NumInstances),
+			Spec: v1.ReplicationControllerSpec{
+				Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
 				Selector: map[string]string{"name": rcGUID},
-				Template: &api.PodTemplateSpec{
-					ObjectMeta: api.ObjectMeta{
+				Template: &v1.PodTemplateSpec{
+					ObjectMeta: v1.ObjectMeta{
 						Name:   rcGUID,
 						Labels: map[string]string{"name": rcGUID},
 					},
-					Spec: api.PodSpec{
-						Containers: []api.Container{{
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{
 							Name:  rcGUID,
 							Image: "test/ubuntu:latest",
-							Env: []api.EnvVar{
+							Env: []v1.EnvVar{
 								{Name: "STARTCMD", Value: "start-command-1"},
 								{Name: "ENVVARS", Value: "env-key-1=env-value-1,env-key-2=env-value-2"},
 								{Name: "PORT", Value: "8080"},
@@ -123,13 +126,19 @@ var _ = Describe("Transformer", func() {
 	})
 
 	It("generates the expected kubernetes pod struct", func() {
-		rc, err := transformer.DesiredAppToRC(logger, desiredApp)
+		processGuid, err := helpers.NewProcessGuid(desiredApp.ProcessGuid)
+		Expect(err).NotTo(HaveOccurred())
+
+		rc, err := transformer.DesiredAppToRC(logger, processGuid, desiredApp)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rc).To(Equal(expectedRC))
 	})
 
 	It("generates the expected kubernetes pod struct", func() {
-		rc, err := transformer.DesiredAppToRC(logger, desiredApp2)
+		processGuid, err := helpers.NewProcessGuid(desiredApp.ProcessGuid)
+		Expect(err).NotTo(HaveOccurred())
+
+		rc, err := transformer.DesiredAppToRC(logger, processGuid, desiredApp2)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rc).To(Equal(expectedRC2))
 	})

@@ -3,17 +3,17 @@ package handlers
 import (
 	"net/http"
 
-	"k8s.io/kubernetes/pkg/client/unversioned"
-
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/pivotal-golang/lager"
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
 )
 
 type StopAppHandler struct {
-	k8sClient unversioned.Interface
+	k8sClient v1core.CoreInterface
 	logger    lager.Logger
 }
 
-func NewStopAppHandler(logger lager.Logger, k8sClient unversioned.Interface) *StopAppHandler {
+func NewStopAppHandler(logger lager.Logger, k8sClient v1core.CoreInterface) *StopAppHandler {
 	return &StopAppHandler{
 		logger:    logger,
 		k8sClient: k8sClient,
@@ -51,22 +51,13 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 
 	logger.Debug("removing-desired-lrp")
 
-	var rcGUID string
-	var spaceID string
-
-	// kube requires replication controller name < 63
-	if len(processGuid) >= 63 {
-		rcGUID = processGuid[:60]
-	} else {
-		rcGUID = processGuid
+	pg, err := helpers.NewProcessGuid(processGuid)
+	if err != nil {
+		panic(err)
 	}
+	rcGUID := pg.ShortenedGuid()
+	spaceID := rcGUID
 
-	if len(processGuid) >= 36 {
-		// TODO: decide how to get spaceID during stop cmd.  use application_id as the workaround for now
-		spaceID = processGuid[:36]
-	} else {
-		spaceID = processGuid
-	}
 	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
 	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {
@@ -74,7 +65,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
 		} else {
-			err = h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID)
+			err = h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID, nil)
 			if err != nil {
 				h.logger.Error("failed-to-remove-desired-lrp", err)
 

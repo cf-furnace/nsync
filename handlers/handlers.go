@@ -3,17 +3,16 @@ package handlers
 import (
 	"net/http"
 
-	"k8s.io/kubernetes/pkg/client/unversioned"
-
 	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/nsync"
 	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/pivotal-golang/lager"
 	"github.com/tedsuo/rata"
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
 )
 
-func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient unversioned.Interface) http.Handler {
-	desireAppHandler := NewDesireAppHandler(logger, recipebuilders, k8sClient)
+func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient v1core.CoreInterface) http.Handler {
+	desireAppHandler := NewDesireAppHandler(logger, k8sClient)
 	stopAppHandler := NewStopAppHandler(logger, k8sClient)
 	killIndexHandler := NewKillIndexHandler(logger, bbsClient)
 	taskHandler := NewTaskHandler(logger, bbsClient, recipebuilders)

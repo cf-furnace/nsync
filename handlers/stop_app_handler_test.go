@@ -6,10 +6,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 
 	"github.com/cloudfoundry-incubator/nsync/handlers"
-	"github.com/cloudfoundry-incubator/nsync/handlers/unversionedfakes"
+	"github.com/cloudfoundry-incubator/nsync/handlers/fakes"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
+	"github.com/nu7hatch/gouuid"
 	"github.com/pivotal-golang/lager/lagertest"
 
 	. "github.com/onsi/ginkgo"
@@ -19,37 +21,49 @@ import (
 var _ = Describe("StopAppHandler", func() {
 	var (
 		logger                    *lagertest.TestLogger
-		fakeK8s                   *unversionedfakes.FakeInterface
-		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
-		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
-		expectedNamespace         string
-		request                   *http.Request
-		responseRecorder          *httptest.ResponseRecorder
-		apiNS                     *api.Namespace
+		fakeK8s                   *fakes.FakeKubeClient
+		fakeNamespace             *fakes.FakeNamespace
+		fakeReplicationController *fakes.FakeReplicationController
+
+		request          *http.Request
+		responseRecorder *httptest.ResponseRecorder
+
+		processGuid       helpers.ProcessGuid
+		expectedNamespace string
+		apiNS             *v1.Namespace
 	)
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
-		expectedNamespace = "process-guid"
-		fakeK8s = &unversionedfakes.FakeInterface{}
-		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
-		apiNS = &api.Namespace{
-			ObjectMeta: api.ObjectMeta{
+		fakeK8s = &fakes.FakeKubeClient{}
+		fakeNamespace = &fakes.FakeNamespace{}
+		fakeReplicationController = &fakes.FakeReplicationController{}
+
+		appGuid, err := uuid.NewV4()
+		Expect(err).NotTo(HaveOccurred())
+		appVersion, err := uuid.NewV4()
+		Expect(err).NotTo(HaveOccurred())
+
+		pg := appGuid.String() + "-" + appVersion.String()
+		processGuid, err = helpers.NewProcessGuid(pg)
+		Expect(err).NotTo(HaveOccurred())
+
+		expectedNamespace = processGuid.ShortenedGuid()
+		apiNS = &v1.Namespace{
+			ObjectMeta: v1.ObjectMeta{
 				Name: expectedNamespace,
 			},
-			Spec: api.NamespaceSpec{
-				Finalizers: []api.FinalizerName{api.FinalizerName(expectedNamespace)},
+			Spec: v1.NamespaceSpec{
+				Finalizers: []v1.FinalizerName{v1.FinalizerName(expectedNamespace)},
 			},
 		}
 
 		responseRecorder = httptest.NewRecorder()
 
-		var err error
 		request, err = http.NewRequest("DELETE", "", nil)
 		Expect(err).NotTo(HaveOccurred())
 		request.Form = url.Values{
-			":process_guid": []string{"process-guid"},
+			":process_guid": []string{processGuid.String()},
 		}
 	})
 
@@ -59,13 +73,12 @@ var _ = Describe("StopAppHandler", func() {
 	})
 
 	Context("when deleting the desired app", func() {
-
 		Context("when the desired app exists", func() {
 			BeforeEach(func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&api.ReplicationController{}, nil)
+				fakeReplicationController.GetReturns(&v1.ReplicationController{}, nil)
 			})
 
 			It("invokes the kubernetes to delete the app", func() {
@@ -73,7 +86,7 @@ var _ = Describe("StopAppHandler", func() {
 				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
 				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
 				Expect(fakeReplicationController.DeleteCallCount()).To(Equal(1))
-				Expect(fakeReplicationController.DeleteArgsForCall(0)).To(Equal("process-guid"))
+				Expect(fakeReplicationController.DeleteArgsForCall(0)).To(Equal(processGuid.ShortenedGuid()))
 			})
 
 			It("responds with 202 Accepted", func() {
@@ -113,7 +126,7 @@ var _ = Describe("StopAppHandler", func() {
 			BeforeEach(func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&api.ReplicationController{}, nil)
+				fakeReplicationController.GetReturns(&v1.ReplicationController{}, nil)
 				fakeReplicationController.DeleteReturns(errors.New("oh no"))
 			})
 
@@ -121,6 +134,5 @@ var _ = Describe("StopAppHandler", func() {
 				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
 			})
 		})
-
 	})
 })

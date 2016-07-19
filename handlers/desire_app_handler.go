@@ -7,14 +7,17 @@ import (
 
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
-	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry-incubator/runtime-schema/metric"
 	"github.com/pivotal-golang/lager"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/unversioned"
+
+	kubeerrors "k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
 )
 
 const (
@@ -22,16 +25,14 @@ const (
 )
 
 type DesireAppHandler struct {
-	recipeBuilders map[string]recipebuilder.RecipeBuilder
-	logger         lager.Logger
-	k8sClient      unversioned.Interface
+	logger    lager.Logger
+	k8sClient v1core.CoreInterface
 }
 
-func NewDesireAppHandler(logger lager.Logger, builders map[string]recipebuilder.RecipeBuilder, k8sClient unversioned.Interface) DesireAppHandler {
-	return DesireAppHandler{
-		recipeBuilders: builders,
-		logger:         logger,
-		k8sClient:      k8sClient,
+func NewDesireAppHandler(logger lager.Logger, k8sClient v1core.CoreInterface) *DesireAppHandler {
+	return &DesireAppHandler{
+		logger:    logger,
+		k8sClient: k8sClient,
 	}
 }
 
@@ -56,162 +57,105 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	}
 	logger.Info("request-from-cc", lager.Data{"desired-app": desiredApp})
 
-	logger.Info("request-from-cc", lager.Data{"routing_info": desiredApp.RoutingInfo})
-
-	envNames := []string{}
-	var vcapApp string
-	var rcGUID string
-	var ok bool
-	var spaceID string
-
-	for _, envVar := range desiredApp.Environment {
-		envNames = append(envNames, envVar.Name)
-		if envVar.Name == "VCAP_APPLICATION" {
-			vcapApp = envVar.Value
-		}
-	}
-	/*sample data
-	{"keys":["VCAP_APPLICATION","MEMORY_LIMIT","VCAP_SERVICES"],"method":"PUT","process_guid":"e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b","request":"/v1/apps/e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b?%3Aprocess_guid=e9640a75-9ddf-4351-bccd-21264640c156-4291ad33-41be-4675-8fc5-cfb72af8047b\u0026","session":"2"}}
-	*/
-	logger.Debug("environment", lager.Data{"environment": envNames})
-	logger.Debug("environment keys", lager.Data{"keys": desiredApp.Environment})
-	logger.Debug("environment vcap_application", lager.Data{"VCAP_APPLICATION": vcapApp})
-
-	m := map[string]string{}
-	errUnmarshal := json.Unmarshal([]byte(vcapApp), &m)
-	if errUnmarshal != nil {
-		logger.Error("failed to unmarshal vcapApp", errUnmarshal, lager.Data{"VCAP_APPLICATION": vcapApp})
-	}
-	//spaceID, ok = m["space_id"] TODO: enable this when we fignure out how to get space_id during stop cmd
-	spaceID, ok = m["application_id"]
-	if ok == false {
-		logger.Error("unable to find space_id in environment vcap_application", errors.New("unable to find space_id"))
-	}
-
-	// kube requires replication controller name < 63
-	if len(desiredApp.ProcessGuid) >= 63 {
-		rcGUID = desiredApp.ProcessGuid[:60]
-	} else {
-		rcGUID = desiredApp.ProcessGuid
-	}
-
 	if processGuid != desiredApp.ProcessGuid {
 		logger.Error("process-guid-mismatch", err, lager.Data{"body-process-guid": desiredApp.ProcessGuid})
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	statusCode := http.StatusConflict
-	for tries := 2; tries > 0 && statusCode == http.StatusConflict; tries-- {
-		existingRC, err := h.getDesiredRC(logger, rcGUID, spaceID)
-
-		if err == nil && existingRC != nil {
-			err = h.updateDesiredApp(logger, existingRC, desiredApp, spaceID)
-		} else if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
-			err = h.createDesiredApp(logger, desiredApp, spaceID)
-		} else {
-			logger.Error("Unable to create or update desired app ", err)
-			statusCode = http.StatusServiceUnavailable
-			break
-		}
-
-		if err != nil {
-			mErr := models.ConvertError(err)
-			switch mErr.Type {
-			case models.Error_ResourceConflict:
-				fallthrough
-			case models.Error_ResourceExists:
-				statusCode = http.StatusConflict
-			default:
-				if _, ok := err.(recipebuilder.Error); ok {
-					statusCode = http.StatusBadRequest
-				} else {
-					statusCode = http.StatusServiceUnavailable
-				}
-			}
-		} else {
-			statusCode = http.StatusAccepted
-			desiredLRPCounter.Increment()
-		}
+	spaceGuid, err := getSpaceGuid(desiredApp)
+	if err != nil || spaceGuid == "" {
+		logger.Error("missing-space-guid", err)
+		resp.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
-	logger.Debug("statusCode", lager.Data{"statusCode": statusCode})
-	resp.WriteHeader(statusCode)
-}
-
-func (h *DesireAppHandler) getDesiredRC(logger lager.Logger, processGuid string, namespace string) (*api.ReplicationController, error) {
-	logger = logger.Session("fetching-desired-rc")
-	k8sClient := h.k8sClient
-	var err error
-
-	_, err = k8sClient.Namespaces().Get(namespace)
-
-	if err != nil && err.Error() == "namespaces \""+namespace+"\" not found" {
-		apiNS := &api.Namespace{
-			ObjectMeta: api.ObjectMeta{
-				Name: namespace,
-			},
-			Spec: api.NamespaceSpec{
-				Finalizers: []api.FinalizerName{},
-			},
-		}
-		_, err = k8sClient.Namespaces().Create(apiNS)
-		if err != nil {
-			logger.Error("Not able to create namespace", err, lager.Data{"namespace": namespace})
-		}
+	if err := h.findOrCreateNamespace(logger, spaceGuid); err != nil {
+		logger.Error("find-or-create-namespace", err)
+		resp.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 
-	rc, err := k8sClient.ReplicationControllers(namespace).Get(processGuid)
+	procGuid, err := helpers.NewProcessGuid(processGuid)
+	if err != nil {
+		logger.Error("new-process-guid", err)
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
 
-	return rc, err
+	replicationController, err := h.k8sClient.ReplicationControllers(spaceGuid).Get(procGuid.ShortenedGuid())
+	if err == nil {
+		err = h.updateReplicationController(logger, replicationController, desiredApp)
+	} else {
+		err = h.createReplicationController(logger, procGuid, desiredApp, spaceGuid)
+	}
+
+	if err == nil {
+		desiredLRPCounter.Increment()
+		resp.WriteHeader(http.StatusAccepted)
+	} else {
+		resp.WriteHeader(http.StatusInternalServerError)
+	}
 }
 
-func (h *DesireAppHandler) createDesiredApp(logger lager.Logger, desireAppMessage cc_messages.DesireAppRequestFromCC, namespace string) error {
-	logger = logger.Session("creating-desired-lrp")
-	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
+func (h *DesireAppHandler) findOrCreateNamespace(logger lager.Logger, namespace string) error {
+	_, err := h.k8sClient.Namespaces().Get(namespace)
+	if err == nil {
+		return nil
+	}
+
+	_, err = h.k8sClient.Namespaces().Create(&v1.Namespace{
+		ObjectMeta: v1.ObjectMeta{Name: namespace},
+	})
+	if err == nil {
+		return nil
+	}
+
+	if statusError, ok := err.(*kubeerrors.StatusError); ok {
+		if statusError.Status().Reason == unversioned.StatusReasonAlreadyExists {
+			return nil
+		}
+	}
+	return err
+}
+
+func (h *DesireAppHandler) createReplicationController(
+	logger lager.Logger,
+	processGuid helpers.ProcessGuid,
+	desiredApp cc_messages.DesireAppRequestFromCC,
+	namespace string,
+) error {
+	logger = logger.Session("create-replication-controller")
+
+	replicationController, err := transformer.DesiredAppToRC(logger, processGuid, desiredApp)
 	if err != nil {
 		logger.Fatal("failed-to-transform-desired-app-to-rc", err)
 	}
 
-	k8sClient := h.k8sClient
-
-	_, err = k8sClient.ReplicationControllers(namespace).Create(newRC)
+	_, err = h.k8sClient.ReplicationControllers(namespace).Create(replicationController)
 	if err != nil {
-		logger.Error("failed-to-create-lrp", err)
+		logger.Error("failed-to-create", err)
 		return err
 	}
-	logger.Debug("created-desired-lrp")
 
 	return nil
 }
 
-func (h *DesireAppHandler) updateDesiredApp(
+func (h *DesireAppHandler) updateReplicationController(
 	logger lager.Logger,
-	existingRC *api.ReplicationController,
+	replicationController *v1.ReplicationController,
 	desireAppMessage cc_messages.DesireAppRequestFromCC,
-	namespace string,
 ) error {
-	k8sClient := h.k8sClient
-	var err error
+	logger = logger.Session("update-replication-controller")
 
-	/*_, err = k8sClient.ServerVersion()
+	// Diego allows updates on instances, routes, and annotations
+	replicationController.Spec.Replicas = helpers.Int32Ptr(desireAppMessage.NumInstances)
+
+	_, err := h.k8sClient.ReplicationControllers(replicationController.ObjectMeta.Namespace).Update(replicationController)
 	if err != nil {
-		logger.Fatal("Can't connect to Kubernetes API", err)
+		logger.Error("failed-to-update", err)
 		return err
 	}
-
-	logger.Debug("Connected to Kubernetes API %s")*/
-
-	logger.Debug("updating-desired-lrp")
-	newRC, err := transformer.DesiredAppToRC(logger, desireAppMessage)
-	_, err = k8sClient.ReplicationControllers(namespace).Update(newRC)
-
-	if err != nil {
-		logger.Error("failed-to-update-lrp", err)
-		return err
-	}
-
-	logger.Debug("updated-desired-lrp")
 
 	return nil
 }
@@ -224,4 +168,19 @@ func sanitizeRoutes(routes *models.Routes) *models.Routes {
 		newRoutes[tcp_routes.TCP_ROUTER] = cfRoutes[tcp_routes.TCP_ROUTER]
 	}
 	return &newRoutes
+}
+
+func getSpaceGuid(desireAppMessage cc_messages.DesireAppRequestFromCC) (string, error) {
+	var vcapApplications struct {
+		SpaceGuid string `json:"space_id"`
+	}
+
+	for _, env := range desireAppMessage.Environment {
+		if env.Name == "VCAP_APPLICATION" {
+			err := json.Unmarshal([]byte(env.Value), &vcapApplications)
+			return vcapApplications.SpaceGuid, err
+		}
+	}
+
+	return "", errors.New("Missing space guid")
 }
