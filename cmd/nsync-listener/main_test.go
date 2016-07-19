@@ -39,8 +39,8 @@ var _ = Describe("Nsync Listener", func() {
 	)
 
 	requestDesireWithInstances := func(nInstances int) (*http.Response, error) {
-		req, err := requestGenerator.CreateRequest(nsync.DesireAppRoute, rata.Params{"process_guid": "myapp"}, strings.NewReader(`{
-			"process_guid":  "myapp",
+		req, err := requestGenerator.CreateRequest(nsync.DesireAppRoute, rata.Params{"process_guid": "e9640a75-9ddf-4351-bccd-21264640c156-myapp"}, strings.NewReader(`{
+			"process_guid":  "e9640a75-9ddf-4351-bccd-21264640c156-myapp",
 			"droplet_uri":   "source-url-1",
 			"stack":        "stack-1",
 			"start_command": "npm start",
@@ -127,11 +127,11 @@ var _ = Describe("Nsync Listener", func() {
 		}
 
 		It("Process stop request with no error", func() {
-			stopResponse, err := stopApp("myapp")
+			stopResponse, err := stopApp("e9640a75-9ddf-4351-bccd-21264640c156-myapp")
 			Expect(err).NotTo(HaveOccurred())
 
 			// TODO: needs to differentiate 404 and StatusAccepted
-			Expect(stopResponse.StatusCode).To(Equal(http.StatusNotFound))
+			Expect(stopResponse.StatusCode).To(Equal(http.StatusAccepted))
 		})
 	})
 

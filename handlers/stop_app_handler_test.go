@@ -8,7 +8,6 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 
-	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/cloudfoundry-incubator/nsync/handlers/unversionedfakes"
 	"github.com/pivotal-golang/lager/lagertest"
@@ -20,7 +19,6 @@ import (
 var _ = Describe("StopAppHandler", func() {
 	var (
 		logger                    *lagertest.TestLogger
-		fakeBBS                   *fake_bbs.FakeClient
 		fakeK8s                   *unversionedfakes.FakeInterface
 		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
 		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
@@ -32,9 +30,8 @@ var _ = Describe("StopAppHandler", func() {
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
-		fakeBBS = &fake_bbs.FakeClient{}
+		expectedNamespace = "process-guid"
 		fakeK8s = &unversionedfakes.FakeInterface{}
-		expectedNamespace = "linsun"
 		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
 		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 		apiNS = &api.Namespace{

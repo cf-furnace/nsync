@@ -82,17 +82,17 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	if errUnmarshal != nil {
 		logger.Error("failed to unmarshal vcapApp", errUnmarshal, lager.Data{"VCAP_APPLICATION": vcapApp})
 	}
+	//spaceID, ok = m["space_id"] TODO: enable this when we fignure out how to get space_id during stop cmd
+	spaceID, ok = m["application_id"]
+	if ok == false {
+		logger.Error("unable to find space_id in environment vcap_application", errors.New("unable to find space_id"))
+	}
 
 	// kube requires replication controller name < 63
 	if len(desiredApp.ProcessGuid) >= 63 {
 		rcGUID = desiredApp.ProcessGuid[:60]
 	} else {
 		rcGUID = desiredApp.ProcessGuid
-	}
-
-	spaceID, ok = m["space_id"]
-	if ok == false {
-		logger.Error("unable to find space_id in environment vcap_application", errors.New("unable to find space_id"))
 	}
 
 	if processGuid != desiredApp.ProcessGuid {

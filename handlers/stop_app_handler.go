@@ -52,6 +52,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	logger.Debug("removing-desired-lrp")
 
 	var rcGUID string
+	var spaceID string
 
 	// kube requires replication controller name < 63
 	if len(processGuid) >= 63 {
@@ -60,9 +61,12 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 		rcGUID = processGuid
 	}
 
-	// TODO: decide how to get spaceID.
-	spaceID := "linsun"
-
+	if len(processGuid) >= 36 {
+		// TODO: decide how to get spaceID during stop cmd.  use application_id as the workaround for now
+		spaceID = processGuid[:36]
+	} else {
+		spaceID = processGuid
+	}
 	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
 	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {

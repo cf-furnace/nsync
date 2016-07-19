@@ -41,6 +41,7 @@ var _ = Describe("DesireAppHandler", func() {
 		request           *http.Request
 		responseRecorder  *httptest.ResponseRecorder
 		expectedNamespace string
+		expectedRCName    string
 
 		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
 		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
@@ -55,7 +56,8 @@ var _ = Describe("DesireAppHandler", func() {
 		fakeK8s = &unversionedfakes.FakeInterface{}
 		buildpackBuilder = new(fakes.FakeRecipeBuilder)
 		dockerBuilder = new(fakes.FakeRecipeBuilder)
-		expectedNamespace = "my-space-id"
+		expectedNamespace = "e9640a75-9ddf-4351-bccd-21264640c156"
+		expectedRCName = "e9640a75-9ddf-4351-bccd-21264640c156-some-guid"
 		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
 		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
 		apiNS = &api.Namespace{
@@ -74,13 +76,13 @@ var _ = Describe("DesireAppHandler", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		desireAppRequest = cc_messages.DesireAppRequestFromCC{
-			ProcessGuid:  "some-guid",
+			ProcessGuid:  expectedRCName,
 			DropletUri:   "http://the-droplet.uri.com",
 			Stack:        "some-stack",
 			StartCommand: "the-start-command",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "foo", Value: "bar"},
-				{Name: "VCAP_APPLICATION", Value: "{\"limits\":{\"fds\":16384,\"mem\":256,\"disk\":1024}, \"application_name\":\"my-app\", \"application_uris\":[\"dora.bosh-lite.com\"], \"space_id\":\"my-space-id\", \"application_id\": \"my-very-long-application-id\"}"},
+				{Name: "VCAP_APPLICATION", Value: "{\"limits\":{\"fds\":16384,\"mem\":256,\"disk\":1024}, \"application_name\":\"my-app\", \"application_uris\":[\"dora.bosh-lite.com\"], \"space_id\":\"my-space-id\", \"application_id\": \"e9640a75-9ddf-4351-bccd-21264640c156\"}"},
 				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        128,
@@ -100,7 +102,7 @@ var _ = Describe("DesireAppHandler", func() {
 		request, err = http.NewRequest("POST", "", nil)
 		Expect(err).NotTo(HaveOccurred())
 		request.Form = url.Values{
-			":process_guid": []string{"some-guid"},
+			":process_guid": []string{expectedRCName},
 		}
 	})
 
@@ -127,7 +129,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(nil, errors.New("namespaces \""+expectedNamespace+"\" not found"))
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
 			})
 
 			It("creates the namespace", func() {
@@ -147,7 +149,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
 			})
 
 			It("creates the desired LRP - replication controllers", func() {
@@ -207,7 +209,7 @@ var _ = Describe("DesireAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"some-guid\" not found"))
+				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
 			})
 
 			It("creates the desired LRP in kubernetes", func() {
