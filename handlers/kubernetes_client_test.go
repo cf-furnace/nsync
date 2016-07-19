@@ -9,12 +9,14 @@ type kubeClient interface {
 
 //go:generate counterfeiter -o fakes/fake_namespace.go --fake-name FakeNamespace . namespaceInterface
 //go:generate sed -i .bak s,pkg/client/clientset_generated/release_1_3/typed/core/v1,pkg/api/v1,g fakes/fake_namespace.go
+//go:generate rm -f fakes/fake_namespace.go.bak
 type namespaceInterface interface {
 	v1.NamespaceInterface
 }
 
 //go:generate counterfeiter -o fakes/fake_replication_controller.go --fake-name FakeReplicationController . replicationControllerInterface
 //go:generate sed -i .bak s,pkg/client/clientset_generated/release_1_3/typed/core/v1,pkg/api/v1,g fakes/fake_replication_controller.go
+//go:generate rm -f fakes/fake_replication_controller.go.bak
 type replicationControllerInterface interface {
 	v1.ReplicationControllerInterface
 }
