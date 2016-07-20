@@ -64,7 +64,6 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
 			} else {
-				h.logger.Error("error-check-rc-not-exist", err)
 				podSpec := &rc.Spec.Template.Spec
 				for _, element := range podSpec.Containers {
 					h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
