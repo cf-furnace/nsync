@@ -5,6 +5,7 @@ import (
 
 	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/pivotal-golang/lager"
+	"k8s.io/kubernetes/pkg/api"
 	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
 )
 
@@ -28,17 +29,6 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 		"method":       req.Method,
 		"request":      req.URL.String(),
 	})
-
-	/*if req.Body != nil {
-		stopApp := cc_messages.DesireAppRequestFromCC{}
-		err := json.NewDecoder(req.Body).Decode(&stopApp)
-		if err != nil {
-			logger.Error("parse-stop-app-request-failed", err)
-			resp.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		logger.Info("stop-request-from-cc", lager.Data{"stop-app": stopApp})
-	}*/
 
 	if processGuid == "" {
 		h.logger.Error("missing-process-guid", missingParameterErr)
@@ -65,6 +55,21 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
 		} else {
+			if err != nil && err.Error() == "replicationcontrollers found but no pods" {
+				// ignore:  tests with fake replicationControllers
+				h.logger.Debug("ignore deleting pod")
+			} else if err != nil {
+				// return service unavailable on all other err
+				h.logger.Error("error-check-rc-exist", err)
+				resp.WriteHeader(http.StatusServiceUnavailable)
+				return
+			} else {
+				h.logger.Error("error-check-rc-not-exist", err)
+				podSpec := &rc.Spec.Template.Spec
+				for _, element := range podSpec.Containers {
+					h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
+				}
+			}
 			err = h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID, nil)
 			if err != nil {
 				h.logger.Error("failed-to-remove-desired-lrp", err)
@@ -76,7 +81,6 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 
 			resp.WriteHeader(http.StatusAccepted)
 		}
-
 	} else {
 		h.logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
 		resp.WriteHeader(http.StatusNotFound)

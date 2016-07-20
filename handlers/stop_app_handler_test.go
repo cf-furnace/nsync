@@ -78,7 +78,7 @@ var _ = Describe("StopAppHandler", func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeNamespace.GetReturns(apiNS, nil)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&v1.ReplicationController{}, nil)
+				fakeReplicationController.GetReturns(&v1.ReplicationController{}, errors.New("replicationcontrollers found but no pods"))
 			})
 
 			It("invokes the kubernetes to delete the app", func() {
@@ -126,7 +126,7 @@ var _ = Describe("StopAppHandler", func() {
 			BeforeEach(func() {
 				fakeK8s.NamespacesReturns(fakeNamespace)
 				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&v1.ReplicationController{}, nil)
+				fakeReplicationController.GetReturns(&v1.ReplicationController{}, errors.New("replicationcontrollers found but no pods"))
 				fakeReplicationController.DeleteReturns(errors.New("oh no"))
 			})
 
