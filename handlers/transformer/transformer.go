@@ -1,44 +1,27 @@
 package transformer
 
 import (
-	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/pivotal-golang/lager"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 )
 
 // transform from desired app to ReplicationController format
-func DesiredAppToRC(logger lager.Logger,
-	desiredApp cc_messages.DesireAppRequestFromCC) (*api.ReplicationController, error) {
+func DesiredAppToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desiredApp cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {
 	if desiredApp.DockerImageUrl != "" {
-		// push docker image url to kube image
-		imageUrl, err := PushImageToKubeRegistry(desiredApp.DockerImageUrl)
-		if err != nil {
-			logger.Fatal("failed-to-push-image", err)
-		}
-
-		// transform to RC
-		return DesiredAppImageToRC(logger, desiredApp, imageUrl)
-	} else {
-		return DesiredAppDropletToRC(logger, desiredApp)
+		return DesiredAppImageToRC(logger, processGuid, desiredApp)
 	}
+	return DesiredAppDropletToRC(logger, processGuid, desiredApp)
 }
 
-func PushImageToKubeRegistry(imageUrl string) (string, error) {
-	// TODO: if public dockerhub image is used, we can return as it is
-	// TODO: if it is a private registry, we would need to push that image to kube registry
-	return imageUrl, nil
-}
+func DesiredAppDropletToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desiredApp cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {
+	shortenedProcessGuid := processGuid.ShortenedGuid()
 
-func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireAppRequestFromCC) (*api.ReplicationController, error) {
 	var env string
-	var rcGUID string
-
-	dropletURI := desiredApp.DropletUri
 	for _, envVar := range desiredApp.Environment {
 		if envVar.Name == "VCAP_APPLICATION" {
 			// ignore for now
@@ -49,60 +32,29 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 		}
 	}
 
-	// kube requires replication controller name < 63
-	if len(desiredApp.ProcessGuid) >= 63 {
-		rcGUID = desiredApp.ProcessGuid[:60]
-	} else {
-		rcGUID = desiredApp.ProcessGuid
-	}
+	env = env + ",PORT=8080"
 
-	routingInfo := desiredApp.RoutingInfo
-
-	httpRoutes, ok := routingInfo[cc_messages.CC_HTTP_ROUTES]
-	if ok == false {
-		logger.Debug("unable to find http_routes in desiredApp, not setting PORT env var")
-	} else {
-		logger.Debug("found http_routes in desiredApp, setting PORT env var", lager.Data{"httpRoutes": httpRoutes})
-
-		var routes []cc_messages.CCHTTPRoute
-		err1 := json.Unmarshal(*httpRoutes, &routes)
-		if err1 != nil {
-			logger.Error("failed to unmarshal http routes", err1, lager.Data{"routes": routes})
-		}
-
-		for _, route := range routes {
-			port := route.Port
-			if port != 0x0 {
-				env = strings.TrimPrefix(fmt.Sprintf("%s,%s=%s", env, "PORT", strconv.FormatUint(uint64(port), 10)), ",")
-				break
-			}
-		}
-
-	}
-
-	// grab first port and set it as env var
-
-	rc := &api.ReplicationController{
-		ObjectMeta: api.ObjectMeta{
-			Name: rcGUID,
-		},
-		Spec: api.ReplicationControllerSpec{
-			Replicas: int32(desiredApp.NumInstances),
-			Selector: map[string]string{"name": rcGUID},
-			Template: &api.PodTemplateSpec{
-				ObjectMeta: api.ObjectMeta{
-					Name:   rcGUID,
-					Labels: map[string]string{"name": rcGUID},
+	rc := &v1.ReplicationController{
+		ObjectMeta: v1.ObjectMeta{Name: shortenedProcessGuid},
+		Spec: v1.ReplicationControllerSpec{
+			Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
+			Selector: map[string]string{"name": shortenedProcessGuid},
+			Template: &v1.PodTemplateSpec{
+				ObjectMeta: v1.ObjectMeta{
+					Name: shortenedProcessGuid,
+					Labels: map[string]string{
+						"name": shortenedProcessGuid,
+					},
 				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{{
-						Name:  fmt.Sprintf("%s-r", rcGUID),
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{
+						Name:  fmt.Sprintf("%s-r", shortenedProcessGuid),
 						Image: "linsun/k8s-runner:latest",
-						Env: []api.EnvVar{
+						Env: []v1.EnvVar{
 							{Name: "STARTCMD", Value: desiredApp.StartCommand},
 							{Name: "ENVVARS", Value: env},
 							{Name: "PORT", Value: "8080"},
-							{Name: "DROPLETURI", Value: dropletURI},
+							{Name: "DROPLETURI", Value: desiredApp.DropletUri},
 						},
 					}},
 				},
@@ -113,10 +65,10 @@ func DesiredAppDropletToRC(logger lager.Logger, desiredApp cc_messages.DesireApp
 	return rc, nil
 }
 
-func DesiredAppImageToRC(logger lager.Logger, desiredApp cc_messages.DesireAppRequestFromCC, imageUrl string) (*api.ReplicationController, error) {
-	var env string
-	var rcGUID string
+func DesiredAppImageToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desiredApp cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {
+	shortenedProcessGuid := processGuid.ShortenedGuid()
 
+	var env string
 	for _, envVar := range desiredApp.Environment {
 		if envVar.Name == "VCAP_APPLICATION" {
 			// ignore
@@ -127,30 +79,23 @@ func DesiredAppImageToRC(logger lager.Logger, desiredApp cc_messages.DesireAppRe
 		}
 	}
 
-	// kube requires replication controller name < 63
-	if len(desiredApp.ProcessGuid) >= 60 {
-		rcGUID = desiredApp.ProcessGuid[:60]
-	} else {
-		rcGUID = desiredApp.ProcessGuid
-	}
-
-	rc := &api.ReplicationController{
-		ObjectMeta: api.ObjectMeta{
-			Name: rcGUID,
+	rc := &v1.ReplicationController{
+		ObjectMeta: v1.ObjectMeta{
+			Name: shortenedProcessGuid,
 		},
-		Spec: api.ReplicationControllerSpec{
-			Replicas: int32(desiredApp.NumInstances),
-			Selector: map[string]string{"name": rcGUID},
-			Template: &api.PodTemplateSpec{
-				ObjectMeta: api.ObjectMeta{
-					Name:   rcGUID,
-					Labels: map[string]string{"name": rcGUID},
+		Spec: v1.ReplicationControllerSpec{
+			Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
+			Selector: map[string]string{"name": shortenedProcessGuid},
+			Template: &v1.PodTemplateSpec{
+				ObjectMeta: v1.ObjectMeta{
+					Name:   shortenedProcessGuid,
+					Labels: map[string]string{"name": shortenedProcessGuid},
 				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{{
-						Name:  rcGUID,
-						Image: imageUrl,
-						Env: []api.EnvVar{
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{
+						Name:  shortenedProcessGuid,
+						Image: desiredApp.DockerImageUrl,
+						Env: []v1.EnvVar{
 							{Name: "STARTCMD", Value: desiredApp.StartCommand},
 							{Name: "ENVVARS", Value: env},
 							{Name: "PORT", Value: "8080"},

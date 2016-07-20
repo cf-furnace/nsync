@@ -3,25 +3,25 @@ package handlers_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 
-	"k8s.io/kubernetes/pkg/api"
-
-	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/nsync/bulk/fakes"
 	"github.com/cloudfoundry-incubator/nsync/handlers"
+	"github.com/cloudfoundry-incubator/nsync/handlers/fakes"
 	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
-	"github.com/cloudfoundry-incubator/nsync/handlers/unversionedfakes"
-	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
 	"github.com/cloudfoundry/dropsonde/metrics"
+	"github.com/nu7hatch/gouuid"
 	"github.com/pivotal-golang/lager/lagertest"
+
+	kubeerrors "k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -31,43 +31,40 @@ import (
 var _ = Describe("DesireAppHandler", func() {
 	var (
 		logger           *lagertest.TestLogger
-		fakeBBS          *fake_bbs.FakeClient
-		fakeK8s          *unversionedfakes.FakeInterface
-		buildpackBuilder *fakes.FakeRecipeBuilder
-		dockerBuilder    *fakes.FakeRecipeBuilder
 		desireAppRequest cc_messages.DesireAppRequestFromCC
+		processGuid      helpers.ProcessGuid
 		metricSender     *fake.FakeMetricSender
 
-		request           *http.Request
-		responseRecorder  *httptest.ResponseRecorder
-		expectedNamespace string
-		expectedRCName    string
+		request          *http.Request
+		responseRecorder *httptest.ResponseRecorder
 
-		fakeNamespace             *unversionedfakes.FakeNamespaceInterface
-		fakeReplicationController *unversionedfakes.FakeReplicationControllerInterface
-		apiNS                     *api.Namespace
+		fakeKubeClient            *fakes.FakeKubeClient
+		fakeNamespace             *fakes.FakeNamespace
+		fakeReplicationController *fakes.FakeReplicationController
 	)
 
 	BeforeEach(func() {
-		var err error
-
 		logger = lagertest.NewTestLogger("test")
-		fakeBBS = &fake_bbs.FakeClient{}
-		fakeK8s = &unversionedfakes.FakeInterface{}
-		buildpackBuilder = new(fakes.FakeRecipeBuilder)
-		dockerBuilder = new(fakes.FakeRecipeBuilder)
-		expectedNamespace = "e9640a75-9ddf-4351-bccd-21264640c156"
-		expectedRCName = "e9640a75-9ddf-4351-bccd-21264640c156-some-guid"
-		fakeNamespace = &unversionedfakes.FakeNamespaceInterface{}
-		fakeReplicationController = &unversionedfakes.FakeReplicationControllerInterface{}
-		apiNS = &api.Namespace{
-			ObjectMeta: api.ObjectMeta{
-				Name: expectedNamespace,
+
+		fakeNamespace = &fakes.FakeNamespace{}
+		fakeNamespace.GetReturns(&v1.Namespace{
+			ObjectMeta: v1.ObjectMeta{
+				Name: "my-space-id",
 			},
-			Spec: api.NamespaceSpec{
-				Finalizers: []api.FinalizerName{},
+		}, nil)
+
+		fakeReplicationController = &fakes.FakeReplicationController{}
+		fakeReplicationController.GetReturns(nil, &kubeerrors.StatusError{
+			ErrStatus: unversioned.Status{
+				Status: unversioned.StatusFailure,
+				Reason: unversioned.StatusReasonNotFound,
+				Code:   http.StatusNotFound,
 			},
-		}
+		})
+
+		fakeKubeClient = &fakes.FakeKubeClient{}
+		fakeKubeClient.NamespacesReturns(fakeNamespace)
+		fakeKubeClient.ReplicationControllersReturns(fakeReplicationController)
 
 		routingInfo, err := cc_messages.CCHTTPRoutes{
 			{Hostname: "route1"},
@@ -75,14 +72,28 @@ var _ = Describe("DesireAppHandler", func() {
 		}.CCRouteInfo()
 		Expect(err).NotTo(HaveOccurred())
 
+		appGuid, err := uuid.NewV4()
+		Expect(err).NotTo(HaveOccurred())
+		appVersion, err := uuid.NewV4()
+		Expect(err).NotTo(HaveOccurred())
+
+		pg := appGuid.String() + "-" + appVersion.String()
+		processGuid, err = helpers.NewProcessGuid(pg)
+		Expect(err).NotTo(HaveOccurred())
+
 		desireAppRequest = cc_messages.DesireAppRequestFromCC{
-			ProcessGuid:  expectedRCName,
+			ProcessGuid:  pg,
 			DropletUri:   "http://the-droplet.uri.com",
 			Stack:        "some-stack",
 			StartCommand: "the-start-command",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "foo", Value: "bar"},
-				{Name: "VCAP_APPLICATION", Value: "{\"limits\":{\"fds\":16384,\"mem\":256,\"disk\":1024}, \"application_name\":\"my-app\", \"application_uris\":[\"dora.bosh-lite.com\"], \"space_id\":\"my-space-id\", \"application_id\": \"e9640a75-9ddf-4351-bccd-21264640c156\"}"},
+				{Name: "VCAP_APPLICATION", Value: `{
+					"application_name":"my-app",
+					"space_id":"my-space-id",
+					"application_id":
+					"my-very-long-application-id"
+				}`},
 				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
 			MemoryMB:        128,
@@ -102,7 +113,7 @@ var _ = Describe("DesireAppHandler", func() {
 		request, err = http.NewRequest("POST", "", nil)
 		Expect(err).NotTo(HaveOccurred())
 		request.Form = url.Values{
-			":process_guid": []string{expectedRCName},
+			":process_guid": []string{pg},
 		}
 	})
 
@@ -115,193 +126,134 @@ var _ = Describe("DesireAppHandler", func() {
 			request.Body = ioutil.NopCloser(reader)
 		}
 
-		handler := handlers.NewDesireAppHandler(logger, map[string]recipebuilder.RecipeBuilder{
-			"buildpack": buildpackBuilder,
-			"docker":    dockerBuilder,
-		}, fakeK8s)
+		handler := handlers.NewDesireAppHandler(logger, fakeKubeClient)
 		handler.DesireApp(responseRecorder, request)
 	})
 
-	Context("when the desired LRP does not exist", func() {
-
-		Context("when the namespace is missing", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(nil, errors.New("namespaces \""+expectedNamespace+"\" not found"))
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
-			})
-
-			It("creates the namespace", func() {
-				Expect(fakeK8s.NamespacesCallCount()).To(Equal(2))
-				Expect(fakeNamespace.GetCallCount()).To(Equal(1))
-				Expect(fakeNamespace.GetArgsForCall(0)).To(Equal(expectedNamespace))
-
-				Expect(fakeNamespace.CreateCallCount()).To(Equal(1))
-				Expect(fakeNamespace.CreateArgsForCall(0).ObjectMeta.Name).To(Equal(expectedNamespace))
-
-			})
+	Context("when the namespace is missing", func() {
+		BeforeEach(func() {
+			err := &kubeerrors.StatusError{
+				ErrStatus: unversioned.Status{
+					Status: unversioned.StatusFailure,
+					Reason: unversioned.StatusReasonNotFound,
+					Code:   http.StatusNotFound,
+				},
+			}
+			fakeNamespace.GetReturns(nil, err)
 		})
 
-		Context("when the namespace already exists", func() {
+		It("creates the namespace", func() {
+			Expect(fakeNamespace.GetCallCount()).To(Equal(1))
+			Expect(fakeNamespace.GetArgsForCall(0)).To(Equal("my-space-id"))
 
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(apiNS, nil)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
-			})
-
-			It("creates the desired LRP - replication controllers", func() {
-				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
-				Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
-				Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
-				actualRC := fakeReplicationController.CreateArgsForCall(0)
-				expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(actualRC).To(Equal(expectedRC))
-			})
-
-			It("logs the incoming and outgoing request", func() {
-				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
-				Eventually(logger.TestSink.Buffer).Should(gbytes.Say("creating-desired-lrp"))
-			})
-
-			It("responds with 202 Accepted", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-			})
-
-			It("increments the desired LRPs counter", func() {
-				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
-			})
-		})
-
-		Context("when the kubernetes fails", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.CreateReturns(nil, errors.New("oh no"))
-			})
-
-			It("responds with a ServiceUnavailabe error", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
-			})
-		})
-
-		Context("when the LRP has docker image", func() {
-			var apiNS *api.Namespace
-
-			BeforeEach(func() {
-				desireAppRequest.DropletUri = ""
-				desireAppRequest.DockerImageUrl = "docker:///user/repo#tag"
-
-				apiNS = &api.Namespace{
-					ObjectMeta: api.ObjectMeta{
-						Name: expectedNamespace,
-					},
-					Spec: api.NamespaceSpec{
-						Finalizers: []api.FinalizerName{},
-					},
-				}
-
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(apiNS, nil)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \""+expectedRCName+"\" not found"))
-			})
-
-			It("creates the desired LRP in kubernetes", func() {
-				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
-				Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
-				Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
-				actualRC := fakeReplicationController.CreateArgsForCall(0)
-				expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(actualRC).To(Equal(expectedRC))
-			})
-
-			It("responds with 202 Accepted", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-			})
-
-			It("increments the desired LRPs counter", func() {
-				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
-			})
+			Expect(fakeNamespace.CreateCallCount()).To(Equal(1))
+			Expect(fakeNamespace.CreateArgsForCall(0)).To(Equal(&v1.Namespace{
+				ObjectMeta: v1.ObjectMeta{Name: "my-space-id"},
+			}))
 		})
 	})
 
-	Context("when desired LRP already exists", func() {
-		BeforeEach(func() {
-			fakeK8s.NamespacesReturns(fakeNamespace)
-			fakeNamespace.GetReturns(apiNS, nil)
+	Context("when the replciation controller for the app is missing", func() {
+		It("creates a replication controllers", func() {
+			Expect(fakeKubeClient.ReplicationControllersCallCount()).To(Equal(2))
+			Expect(fakeKubeClient.ReplicationControllersArgsForCall(0)).To(Equal("my-space-id"))
+			Expect(fakeKubeClient.ReplicationControllersArgsForCall(1)).To(Equal("my-space-id"))
 
-			fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-			existingRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(existingRC).NotTo(Equal(nil))
-			fakeReplicationController.GetReturns(existingRC, nil)
-
-			desireAppRequest.NumInstances = 3
-		})
-
-		JustBeforeEach(func() {
-			if request.Body == nil {
-				jsonBytes, err := json.Marshal(&desireAppRequest)
-				Expect(err).NotTo(HaveOccurred())
-				reader := bytes.NewReader(jsonBytes)
-
-				request.Body = ioutil.NopCloser(reader)
-			}
-
-			handler := handlers.NewDesireAppHandler(logger, map[string]recipebuilder.RecipeBuilder{
-				"buildpack": buildpackBuilder,
-				"docker":    dockerBuilder,
-			}, fakeK8s)
-			handler.DesireApp(responseRecorder, request)
-		})
-
-		It("updates the desired LRP - replication controllers", func() {
-			Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
-			Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
-			Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
 			Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
-			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(1))
-			Expect(fakeReplicationController.CreateCallCount()).To(Equal(0))
-			actualRC := fakeReplicationController.UpdateArgsForCall(0)
-			expectedRC, err := transformer.DesiredAppToRC(logger, desireAppRequest)
+			Expect(fakeReplicationController.GetArgsForCall(0)).To(Equal(processGuid.ShortenedGuid()))
+
+			expectedRC, err := transformer.DesiredAppToRC(logger, processGuid, desireAppRequest)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(actualRC).To(Equal(expectedRC))
-		})
 
-		It("logs the incoming and outgoing request", func() {
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("request-from-cc"))
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("updating-desired-lrp"))
-		})
-
-		It("checks to see if LRP already exists", func() {
-			Eventually(fakeReplicationController.GetCallCount()).Should(Equal(1))
+			Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
+			Expect(fakeReplicationController.CreateArgsForCall(0)).To(Equal(expectedRC))
 		})
 
 		It("responds with 202 Accepted", func() {
 			Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
 		})
 
-		Context("when the kubernetes fails", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.UpdateReturns(nil, errors.New("oh no"))
-			})
-
-			It("responds with a ServiceUnavailabe error", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
-			})
+		It("increments the desired LRPs counter", func() {
+			Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
 		})
 
+		Context("when creaating the replication controller fails", func() {
+			BeforeEach(func() {
+				fakeReplicationController.CreateReturns(nil, &kubeerrors.StatusError{
+					ErrStatus: unversioned.Status{
+						Status: unversioned.StatusFailure,
+						Reason: unversioned.StatusReasonInternalError,
+						Code:   http.StatusInternalServerError,
+					},
+				})
+			})
+
+			It("responds with 500 Internal Server Error", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusInternalServerError))
+			})
+
+			It("logs an error", func() {
+				Eventually(logger).Should(gbytes.Say("desire-app.create-replication-controller.failed-to-create"))
+			})
+
+			It("does not increment the desired LRPs counter", func() {
+				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(0)))
+			})
+		})
+	})
+
+	Context("when the replication controller already exists", func() {
+		var expectedRC *v1.ReplicationController
+
+		BeforeEach(func() {
+			expectedRC = &v1.ReplicationController{
+				ObjectMeta: v1.ObjectMeta{Name: processGuid.ShortenedGuid()},
+				Spec: v1.ReplicationControllerSpec{
+					Replicas: helpers.Int32Ptr(2),
+				},
+			}
+
+			existingRC := expectedRC
+			existingRC.Spec.Replicas = helpers.Int32Ptr(10)
+			fakeReplicationController.GetReturns(existingRC, nil)
+		})
+
+		It("updates the replication controller", func() {
+			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(1))
+			Expect(fakeReplicationController.UpdateArgsForCall(0)).To(Equal(expectedRC))
+		})
+
+		It("responds with 202 Accepted", func() {
+			Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
+		})
+
+		It("increments the desired LRPs counter", func() {
+			Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(1)))
+		})
+
+		Context("when updating the replication controller fails", func() {
+			BeforeEach(func() {
+				fakeReplicationController.UpdateReturns(nil, &kubeerrors.StatusError{
+					ErrStatus: unversioned.Status{
+						Status: unversioned.StatusFailure,
+						Reason: unversioned.StatusReasonInternalError,
+						Code:   http.StatusInternalServerError,
+					},
+				})
+			})
+
+			It("responds with 500 Internal Server Error", func() {
+				Expect(responseRecorder.Code).To(Equal(http.StatusInternalServerError))
+			})
+
+			It("logs an error", func() {
+				Eventually(logger).Should(gbytes.Say("desire-app.update-replication-controller.failed-to-update"))
+			})
+
+			It("does not increment the desired LRPs counter", func() {
+				Expect(metricSender.GetCounter("LRPsDesired")).To(Equal(uint64(0)))
+			})
+		})
 	})
 
 	Context("when an invalid desire app message is received", func() {
@@ -310,8 +262,8 @@ var _ = Describe("DesireAppHandler", func() {
 			request.Body = ioutil.NopCloser(reader)
 		})
 
-		It("does not call the bbs", func() {
-			Expect(fakeBBS.RetireActualLRPCallCount()).To(BeZero())
+		It("does not create or update a replication controller", func() {
+			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(0))
 		})
 
 		It("responds with 400 Bad Request", func() {
@@ -319,13 +271,7 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		It("logs an error", func() {
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("parse-desired-app-request-failed"))
-		})
-
-		It("does not touch the LRP", func() {
-			Expect(fakeBBS.DesireLRPCallCount()).To(Equal(0))
-			Expect(fakeBBS.UpdateDesiredLRPCallCount()).To(Equal(0))
-			Expect(fakeBBS.RemoveDesiredLRPCallCount()).To(Equal(0))
+			Eventually(logger).Should(gbytes.Say("parse-desired-app-request-failed"))
 		})
 	})
 
@@ -334,8 +280,8 @@ var _ = Describe("DesireAppHandler", func() {
 			request.Form.Set(":process_guid", "another-guid")
 		})
 
-		It("does not call the bbs", func() {
-			Expect(fakeBBS.RetireActualLRPCallCount()).To(BeZero())
+		It("does not create or update a replication controller", func() {
+			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(0))
 		})
 
 		It("responds with 400 Bad Request", func() {
@@ -343,13 +289,72 @@ var _ = Describe("DesireAppHandler", func() {
 		})
 
 		It("logs an error", func() {
-			Eventually(logger.TestSink.Buffer).Should(gbytes.Say("desire-app.process-guid-mismatch"))
-		})
-
-		It("does not touch the LRP", func() {
-			Expect(fakeBBS.DesireLRPCallCount()).To(Equal(0))
-			Expect(fakeBBS.UpdateDesiredLRPCallCount()).To(Equal(0))
-			Expect(fakeBBS.RemoveDesiredLRPCallCount()).To(Equal(0))
+			Eventually(logger).Should(gbytes.Say("desire-app.process-guid-mismatch"))
 		})
 	})
+
+	Context("when the space guid is missing from VCAP_APPLICATION", func() {
+		BeforeEach(func() {
+			desireAppRequest.Environment = []*models.EnvironmentVariable{
+				{Name: "foo", Value: "bar"},
+				{Name: "VCAP_APPLICATION", Value: `{
+					"application_name":"my-app",
+					"application_id":
+					"my-very-long-application-id"
+				}`},
+				{Name: "VCAP_SERVICES", Value: "{}"},
+			}
+		})
+
+		It("responds with a 400 Bad Request", func() {
+			Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("logs an error", func() {
+			Eventually(logger).Should(gbytes.Say("desire-app.missing-space-guid"))
+		})
+	})
+
+	Context("when creating a namespace fails", func() {
+		BeforeEach(func() {
+			fakeNamespace.GetReturns(nil, &kubeerrors.StatusError{
+				ErrStatus: unversioned.Status{
+					Status: unversioned.StatusFailure,
+					Reason: unversioned.StatusReasonNotFound,
+					Code:   http.StatusNotFound,
+				},
+			})
+			fakeNamespace.CreateReturns(nil, &kubeerrors.StatusError{
+				ErrStatus: unversioned.Status{
+					Status: unversioned.StatusFailure,
+					Reason: unversioned.StatusReasonInternalError,
+					Code:   http.StatusInternalServerError,
+				},
+			})
+		})
+
+		It("responds with 500 Internal Server Error", func() {
+			Expect(responseRecorder.Code).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("logs an error", func() {
+			Eventually(logger).Should(gbytes.Say("desire-app.find-or-create-namespace"))
+		})
+	})
+
+	Context("when the process guid cannot be parsed", func() {
+		BeforeEach(func() {
+			desireAppRequest.ProcessGuid = "bogus-process-guid"
+			request.Form = url.Values{":process_guid": []string{"bogus-process-guid"}}
+		})
+
+		It("responds with 400 Bad Request", func() {
+			Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("logs an error", func() {
+			Eventually(logger).Should(gbytes.Say("desire-app.new-process-guid"))
+		})
+	})
+
 })

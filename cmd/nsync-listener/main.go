@@ -28,8 +28,8 @@ import (
 	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry/dropsonde"
 
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
 	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/client/unversioned"
 )
 
 var privilegedContainers = flag.Bool(
@@ -145,7 +145,8 @@ func main() {
 		"docker":    recipebuilder.NewDockerRecipeBuilder(logger, dockerRecipeBuilderConfig),
 	}
 
-	handler := handlers.New(logger, initializeBBSClient(logger), recipeBuilders, initializeK8sClient(logger))
+	clientSet := initializeK8sClient(logger)
+	handler := handlers.New(logger, initializeBBSClient(logger), recipeBuilders, clientSet.Core())
 
 	consulClient, err := consuladapter.NewClientFromUrl(*consulCluster)
 	if err != nil {
@@ -215,8 +216,8 @@ func initializeBBSClient(logger lager.Logger) bbs.Client {
 	return bbsClient
 }
 
-func initializeK8sClient(logger lager.Logger) (k8sClient unversioned.Interface) {
-	k8sClient, err := unversioned.New(&restclient.Config{
+func initializeK8sClient(logger lager.Logger) clientset.Interface {
+	k8sClient, err := clientset.NewForConfig(&restclient.Config{
 		Host: *k8sCluster,
 	})
 
