@@ -82,6 +82,17 @@ type FakeReplicationController struct {
 		result1 watch.Interface
 		result2 error
 	}
+	PatchStub        func(name string, pt api.PatchType, data []byte) (result *v1.ReplicationController, err error)
+	patchMutex       sync.RWMutex
+	patchArgsForCall []struct {
+		name string
+		pt   api.PatchType
+		data []byte
+	}
+	patchReturns struct {
+		result1 *v1.ReplicationController
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -358,6 +369,47 @@ func (fake *FakeReplicationController) WatchReturns(result1 watch.Interface, res
 	}{result1, result2}
 }
 
+func (fake *FakeReplicationController) Patch(name string, pt api.PatchType, data []byte) (result *v1.ReplicationController, err error) {
+	var dataCopy []byte
+	if data != nil {
+		dataCopy = make([]byte, len(data))
+		copy(dataCopy, data)
+	}
+	fake.patchMutex.Lock()
+	fake.patchArgsForCall = append(fake.patchArgsForCall, struct {
+		name string
+		pt   api.PatchType
+		data []byte
+	}{name, pt, dataCopy})
+	fake.recordInvocation("Patch", []interface{}{name, pt, dataCopy})
+	fake.patchMutex.Unlock()
+	if fake.PatchStub != nil {
+		return fake.PatchStub(name, pt, data)
+	} else {
+		return fake.patchReturns.result1, fake.patchReturns.result2
+	}
+}
+
+func (fake *FakeReplicationController) PatchCallCount() int {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	return len(fake.patchArgsForCall)
+}
+
+func (fake *FakeReplicationController) PatchArgsForCall(i int) (string, api.PatchType, []byte) {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	return fake.patchArgsForCall[i].name, fake.patchArgsForCall[i].pt, fake.patchArgsForCall[i].data
+}
+
+func (fake *FakeReplicationController) PatchReturns(result1 *v1.ReplicationController, result2 error) {
+	fake.PatchStub = nil
+	fake.patchReturns = struct {
+		result1 *v1.ReplicationController
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeReplicationController) Invocations() map[string][][]interface{} {
 	fake.invocationsMutex.RLock()
 	defer fake.invocationsMutex.RUnlock()
@@ -377,6 +429,8 @@ func (fake *FakeReplicationController) Invocations() map[string][][]interface{} 
 	defer fake.listMutex.RUnlock()
 	fake.watchMutex.RLock()
 	defer fake.watchMutex.RUnlock()
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
 	return fake.invocations
 }
 

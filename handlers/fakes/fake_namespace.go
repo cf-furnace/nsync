@@ -82,6 +82,17 @@ type FakeNamespace struct {
 		result1 watch.Interface
 		result2 error
 	}
+	PatchStub        func(name string, pt api.PatchType, data []byte) (result *v1.Namespace, err error)
+	patchMutex       sync.RWMutex
+	patchArgsForCall []struct {
+		name string
+		pt   api.PatchType
+		data []byte
+	}
+	patchReturns struct {
+		result1 *v1.Namespace
+		result2 error
+	}
 	FinalizeStub        func(item *v1.Namespace) (*v1.Namespace, error)
 	finalizeMutex       sync.RWMutex
 	finalizeArgsForCall []struct {
@@ -367,6 +378,47 @@ func (fake *FakeNamespace) WatchReturns(result1 watch.Interface, result2 error) 
 	}{result1, result2}
 }
 
+func (fake *FakeNamespace) Patch(name string, pt api.PatchType, data []byte) (result *v1.Namespace, err error) {
+	var dataCopy []byte
+	if data != nil {
+		dataCopy = make([]byte, len(data))
+		copy(dataCopy, data)
+	}
+	fake.patchMutex.Lock()
+	fake.patchArgsForCall = append(fake.patchArgsForCall, struct {
+		name string
+		pt   api.PatchType
+		data []byte
+	}{name, pt, dataCopy})
+	fake.recordInvocation("Patch", []interface{}{name, pt, dataCopy})
+	fake.patchMutex.Unlock()
+	if fake.PatchStub != nil {
+		return fake.PatchStub(name, pt, data)
+	} else {
+		return fake.patchReturns.result1, fake.patchReturns.result2
+	}
+}
+
+func (fake *FakeNamespace) PatchCallCount() int {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	return len(fake.patchArgsForCall)
+}
+
+func (fake *FakeNamespace) PatchArgsForCall(i int) (string, api.PatchType, []byte) {
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
+	return fake.patchArgsForCall[i].name, fake.patchArgsForCall[i].pt, fake.patchArgsForCall[i].data
+}
+
+func (fake *FakeNamespace) PatchReturns(result1 *v1.Namespace, result2 error) {
+	fake.PatchStub = nil
+	fake.patchReturns = struct {
+		result1 *v1.Namespace
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeNamespace) Finalize(item *v1.Namespace) (*v1.Namespace, error) {
 	fake.finalizeMutex.Lock()
 	fake.finalizeArgsForCall = append(fake.finalizeArgsForCall, struct {
@@ -420,6 +472,8 @@ func (fake *FakeNamespace) Invocations() map[string][][]interface{} {
 	defer fake.listMutex.RUnlock()
 	fake.watchMutex.RLock()
 	defer fake.watchMutex.RUnlock()
+	fake.patchMutex.RLock()
+	defer fake.patchMutex.RUnlock()
 	fake.finalizeMutex.RLock()
 	defer fake.finalizeMutex.RUnlock()
 	return fake.invocations
