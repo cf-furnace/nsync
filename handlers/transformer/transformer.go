@@ -32,7 +32,7 @@ func DesiredAppDropletToRC(logger lager.Logger, processGuid helpers.ProcessGuid,
 		}
 	}
 
-	env = env + ",PORT=8080"
+	env = strings.TrimPrefix(env+",PORT=8080", ",")
 
 	rc := &v1.ReplicationController{
 		ObjectMeta: v1.ObjectMeta{Name: shortenedProcessGuid},
