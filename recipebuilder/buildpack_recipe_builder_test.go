@@ -225,9 +225,9 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 							{Name: "LIFECYCLE_URL", Value: "http://file-server.com/v1/static/some-lifecycle.tgz"},
 							{Name: "DROPLET_URL", Value: "http://the-droplet.uri.com"},
 						},
-						SecurityContext: &v1.SecurityContext{
-							RunAsUser: helpers.Int64Ptr(2000),
-						},
+						// SecurityContext: &v1.SecurityContext{
+						// 	RunAsUser: helpers.Int64Ptr(2000),
+						// },
 						Command: []string{
 							"/bin/bash",
 							"-c",

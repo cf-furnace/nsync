@@ -214,9 +214,9 @@ func (b *BuildpackRecipeBuilder) BuildReplicationController(desiredApp *cc_messa
 			{Name: "LIFECYCLE_URL", Value: lifecycleURL},
 			{Name: "DROPLET_URL", Value: desiredApp.DropletUri},
 		},
-		SecurityContext: &v1.SecurityContext{
-			RunAsUser: helpers.Int64Ptr(2000),
-		},
+		// SecurityContext: &v1.SecurityContext{
+		// 	RunAsUser: helpers.Int64Ptr(2000),
+		// },
 		Command: []string{
 			"/bin/bash",
 			"-c",
