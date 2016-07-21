@@ -47,7 +47,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 		panic(err)
 	}
 	rcGUID := pg.ShortenedGuid()
-	spaceID := rcGUID
+	//spaceID := rcGUID
 
 	rcList, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
 		LabelSelector: labels.Set(map[string]string{"name": rcGUID}).AsSelector(),
@@ -67,14 +67,17 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 				h.logger.Error("error-check-rc-exist", err)
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
-			} else {
-				podSpec := &rc.Spec.Template.Spec
-				for _, element := range podSpec.Containers {
-					h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
-				}
-			}
-
-			err := h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID, nil)
+			} //else {
+			//h.logger.Debug("deleting pod within RC")
+			//podSpec := &rc.Spec.Template.Spec
+			//for _, element := range podSpec.Containers {
+			//	h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
+			//}
+			//}
+			b := true
+			err := h.k8sClient.ReplicationControllers(rc.GetNamespace()).Delete(rcGUID, &api.DeleteOptions{
+				OrphanDependents: &b,
+			})
 			if err != nil {
 				h.logger.Error("failed-to-remove-desired-lrp", err)
 
