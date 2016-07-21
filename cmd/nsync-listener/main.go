@@ -192,7 +192,7 @@ func main() {
 }
 
 func initializeDropsonde(logger lager.Logger) {
-	dropsondeDestination := fmt.Sprint("localhost:", *dropsondePort)
+	dropsondeDestination := fmt.Sprint("127.0.0.1:", *dropsondePort)
 	err := dropsonde.Initialize(dropsondeDestination, dropsondeOrigin)
 	if err != nil {
 		logger.Error("failed to initialize dropsonde: %v", err)
