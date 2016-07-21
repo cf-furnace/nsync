@@ -54,7 +54,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	})
 	logger.Info("returned rc list is ", lager.Data{"rc list": rcList})
 	if rcList != nil && rcList.Size() > 0 {
-		rc := rcList.Items[1]
+		rc := rcList.Items[0]
 		logger.Debug("rc is ", lager.Data{"rc": rc})
 		logger.Debug("namespace is ", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
 		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
