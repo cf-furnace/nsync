@@ -55,6 +55,8 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	logger.Info("returned rc list is ", lager.Data{"rc list": rcList})
 	if rcList != nil && rcList.Size() > 0 {
 		rc := rcList.Items[1]
+		logger.Debug("rc is ", lager.Data{"rc": rc})
+		logger.Debug("namespace is ", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
 		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
 			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
@@ -74,10 +76,9 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 			//	h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
 			//}
 			//}
-			b := true
-			err := h.k8sClient.ReplicationControllers(rc.GetNamespace()).Delete(rcGUID, &api.DeleteOptions{
-				OrphanDependents: &b,
-			})
+			//b := true
+			logger.Debug("deleting the rc", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
+			err := h.k8sClient.ReplicationControllers(rc.ObjectMeta.GetNamespace()).Delete(rcGUID, &api.DeleteOptions{})
 			if err != nil {
 				h.logger.Error("failed-to-remove-desired-lrp", err)
 
