@@ -3,6 +3,8 @@ package recipebuilder
 import (
 	"fmt"
 
+	"k8s.io/kubernetes/pkg/api/v1"
+
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/diego-ssh/keys"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
@@ -49,6 +51,11 @@ type RecipeBuilder interface {
 	Build(*cc_messages.DesireAppRequestFromCC) (*models.DesiredLRP, error)
 	BuildTask(*cc_messages.TaskRequestFromCC) (*models.TaskDefinition, error)
 	ExtractExposedPorts(*cc_messages.DesireAppRequestFromCC) ([]uint32, error)
+}
+
+//go:generate counterfeiter -o ../bulk/fakes/fake_furnace_recipe_builder.go . FurnaceRecipeBuilder
+type FurnaceRecipeBuilder interface {
+	BuildReplicationController(*cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error)
 }
 
 type Error struct {

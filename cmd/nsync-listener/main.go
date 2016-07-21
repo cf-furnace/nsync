@@ -144,9 +144,17 @@ func main() {
 		"buildpack": recipebuilder.NewBuildpackRecipeBuilder(logger, buildpackRecipeBuilderConfig),
 		"docker":    recipebuilder.NewDockerRecipeBuilder(logger, dockerRecipeBuilderConfig),
 	}
+	furnaceBuilders := map[string]recipebuilder.FurnaceRecipeBuilder{
+		"buildpack": recipebuilder.NewBuildpackRecipeBuilder(logger, buildpackRecipeBuilderConfig),
+	}
 
 	clientSet := initializeK8sClient(logger)
-	handler := handlers.New(logger, initializeBBSClient(logger), recipeBuilders, clientSet.Core())
+	handler := handlers.New(
+		logger,
+		initializeBBSClient(logger),
+		recipeBuilders,
+		furnaceBuilders,
+		clientSet.Core())
 
 	consulClient, err := consuladapter.NewClientFromUrl(*consulCluster)
 	if err != nil {
@@ -192,7 +200,7 @@ func main() {
 }
 
 func initializeDropsonde(logger lager.Logger) {
-	dropsondeDestination := fmt.Sprint("localhost:", *dropsondePort)
+	dropsondeDestination := fmt.Sprint("127.0.0.1:", *dropsondePort)
 	err := dropsonde.Initialize(dropsondeDestination, dropsondeOrigin)
 	if err != nil {
 		logger.Error("failed to initialize dropsonde: %v", err)

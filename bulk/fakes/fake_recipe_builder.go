@@ -37,6 +37,8 @@ type FakeRecipeBuilder struct {
 		result1 []uint32
 		result2 error
 	}
+	invocations      map[string][][]interface{}
+	invocationsMutex sync.RWMutex
 }
 
 func (fake *FakeRecipeBuilder) Build(arg1 *cc_messages.DesireAppRequestFromCC) (*models.DesiredLRP, error) {
@@ -44,6 +46,7 @@ func (fake *FakeRecipeBuilder) Build(arg1 *cc_messages.DesireAppRequestFromCC) (
 	fake.buildArgsForCall = append(fake.buildArgsForCall, struct {
 		arg1 *cc_messages.DesireAppRequestFromCC
 	}{arg1})
+	fake.recordInvocation("Build", []interface{}{arg1})
 	fake.buildMutex.Unlock()
 	if fake.BuildStub != nil {
 		return fake.BuildStub(arg1)
@@ -77,6 +80,7 @@ func (fake *FakeRecipeBuilder) BuildTask(arg1 *cc_messages.TaskRequestFromCC) (*
 	fake.buildTaskArgsForCall = append(fake.buildTaskArgsForCall, struct {
 		arg1 *cc_messages.TaskRequestFromCC
 	}{arg1})
+	fake.recordInvocation("BuildTask", []interface{}{arg1})
 	fake.buildTaskMutex.Unlock()
 	if fake.BuildTaskStub != nil {
 		return fake.BuildTaskStub(arg1)
@@ -110,6 +114,7 @@ func (fake *FakeRecipeBuilder) ExtractExposedPorts(arg1 *cc_messages.DesireAppRe
 	fake.extractExposedPortsArgsForCall = append(fake.extractExposedPortsArgsForCall, struct {
 		arg1 *cc_messages.DesireAppRequestFromCC
 	}{arg1})
+	fake.recordInvocation("ExtractExposedPorts", []interface{}{arg1})
 	fake.extractExposedPortsMutex.Unlock()
 	if fake.ExtractExposedPortsStub != nil {
 		return fake.ExtractExposedPortsStub(arg1)
@@ -136,6 +141,30 @@ func (fake *FakeRecipeBuilder) ExtractExposedPortsReturns(result1 []uint32, resu
 		result1 []uint32
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeRecipeBuilder) Invocations() map[string][][]interface{} {
+	fake.invocationsMutex.RLock()
+	defer fake.invocationsMutex.RUnlock()
+	fake.buildMutex.RLock()
+	defer fake.buildMutex.RUnlock()
+	fake.buildTaskMutex.RLock()
+	defer fake.buildTaskMutex.RUnlock()
+	fake.extractExposedPortsMutex.RLock()
+	defer fake.extractExposedPortsMutex.RUnlock()
+	return fake.invocations
+}
+
+func (fake *FakeRecipeBuilder) recordInvocation(key string, args []interface{}) {
+	fake.invocationsMutex.Lock()
+	defer fake.invocationsMutex.Unlock()
+	if fake.invocations == nil {
+		fake.invocations = map[string][][]interface{}{}
+	}
+	if fake.invocations[key] == nil {
+		fake.invocations[key] = [][]interface{}{}
+	}
+	fake.invocations[key] = append(fake.invocations[key], args)
 }
 
 var _ recipebuilder.RecipeBuilder = new(FakeRecipeBuilder)

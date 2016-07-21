@@ -2,13 +2,15 @@ package recipebuilder_test
 
 import (
 	"encoding/json"
-	"errors"
-	"time"
+	"fmt"
+	"strings"
+
+	"k8s.io/kubernetes/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/api/v1"
 
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/diego-ssh/keys"
 	"github.com/cloudfoundry-incubator/diego-ssh/keys/fake_keys"
-	"github.com/cloudfoundry-incubator/diego-ssh/routes"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
@@ -29,9 +31,8 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 		fakeKeyFactory *fake_keys.FakeSSHKeyFactory
 		logger         *lagertest.TestLogger
 		expectedRoutes models.Routes
+		processGuid    helpers.ProcessGuid
 	)
-
-	defaultNofile := recipebuilder.DefaultFileDescriptorLimit
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
@@ -70,8 +71,11 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 		}.CCRouteInfo()
 		Expect(err).NotTo(HaveOccurred())
 
+		processGuid, err = helpers.NewProcessGuid("8d58c09b-b305-4f16-bcfe-b78edcb77100-3f258eb0-9dac-460c-a424-b43fe92bee27")
+		Expect(err).NotTo(HaveOccurred())
+
 		desiredAppReq = cc_messages.DesireAppRequestFromCC{
-			ProcessGuid:       "the-app-guid-the-app-version",
+			ProcessGuid:       processGuid.String(),
 			DropletUri:        "http://the-droplet.uri.com",
 			DropletHash:       "some-hash",
 			Stack:             "some-stack",
@@ -79,6 +83,7 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			ExecutionMetadata: "the-execution-metadata",
 			Environment: []*models.EnvironmentVariable{
 				{Name: "foo", Value: "bar"},
+				{Name: "VCAP_APPLICATION", Value: `{"space_id": "space-guid"}`},
 			},
 			MemoryMB:        128,
 			DiskMB:          512,
@@ -106,29 +111,10 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 	})
 
 	Describe("Build", func() {
-		var desiredLRP *models.DesiredLRP
+		var replicationController *v1.ReplicationController
 
 		JustBeforeEach(func() {
-			desiredLRP, err = builder.Build(&desiredAppReq)
-		})
-
-		Describe("when no droplet hash is set", func() {
-			BeforeEach(func() {
-				desiredAppReq.DropletHash = ""
-			})
-
-			It("does not populate ChecksumAlgorithm and ChecksumValue", func() {
-				expectedSetup := models.Serial(
-					&models.DownloadAction{
-						From:     "http://the-droplet.uri.com",
-						To:       ".",
-						CacheKey: "droplets-the-app-guid-the-app-version",
-						User:     "vcap",
-					},
-				)
-				Expect(desiredLRP.Setup.GetValue()).To(Equal(expectedSetup))
-
-			})
+			replicationController, err = builder.BuildReplicationController(&desiredAppReq)
 		})
 
 		Context("when ports is an empty array", func() {
@@ -137,12 +123,12 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			})
 
 			It("requests no ports on the lrp", func() {
-				Expect(desiredLRP.Ports).To(BeEmpty())
+				Expect(replicationController.Spec.Template.Spec.Containers[0].Ports).To(BeEmpty())
 			})
 
 			It("does not include a PORT environment variable", func() {
 				varNames := []string{}
-				for _, envVar := range desiredLRP.EnvironmentVariables {
+				for _, envVar := range replicationController.Spec.Template.Spec.Containers[0].Env {
 					varNames = append(varNames, envVar.Name)
 				}
 
@@ -156,103 +142,103 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			})
 
 			It("builds a valid DesiredLRP", func() {
-				Expect(desiredLRP.ProcessGuid).To(Equal("the-app-guid-the-app-version"))
-				Expect(desiredLRP.Instances).To(BeEquivalentTo(23))
-				Expect(desiredLRP.Routes).To(Equal(&expectedRoutes))
+				Expect(replicationController.ObjectMeta.Name).To(Equal(processGuid.ShortenedGuid()))
+				Expect(replicationController.ObjectMeta.Namespace).To(Equal("space-guid"))
 
-				Expect(desiredLRP.Annotation).To(Equal("etag-updated-at"))
-				Expect(desiredLRP.RootFs).To(Equal(models.PreloadedRootFS("some-stack")))
-				Expect(desiredLRP.MemoryMb).To(BeEquivalentTo(128))
-				Expect(desiredLRP.DiskMb).To(BeEquivalentTo(512))
-				Expect(desiredLRP.Ports).To(Equal([]uint32{8080}))
-				Expect(desiredLRP.Privileged).To(BeFalse())
-				//Expect(desiredLRP.StartTimeoutMs).To(BeEquivalentTo(123456000))
+				Expect(replicationController.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/app-guid", processGuid.AppGuid.String()))
+				Expect(replicationController.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/space-guid", "space-guid"))
+				Expect(replicationController.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/process-guid", processGuid.ShortenedGuid()))
 
-				Expect(desiredLRP.LogGuid).To(Equal("the-log-id"))
-				Expect(desiredLRP.LogSource).To(Equal("CELL"))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/allow-ssh", "false"))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/routing-info", MustEncode(expectedRoutes)))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/egress-rules", MustEncode(egressRules)))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/log-source", "MYSOURCE"))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/log-guid", "the-log-id"))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/metrics-guid", "the-log-id"))
 
-				Expect(desiredLRP.EnvironmentVariables).To(ConsistOf(
-					&models.EnvironmentVariable{Name: "LANG", Value: recipebuilder.DefaultLANG},
+				Expect(*replicationController.Spec.Replicas).To(BeEquivalentTo(23))
+				Expect(replicationController.Spec.Selector).To(Equal(map[string]string{"cloudfoundry.org/process-guid": processGuid.ShortenedGuid()}))
+
+				Expect(replicationController.Spec.Template.Spec.Volumes).To(ConsistOf(
+					v1.Volume{
+						Name:         "lifecycle",
+						VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}},
+					},
+					v1.Volume{
+						Name:         "droplet",
+						VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}},
+					},
 				))
 
-				Expect(desiredLRP.MetricsGuid).To(Equal("the-log-id"))
+				// Monitoring
+				// Expect(desiredLRP.Annotation).To(Equal("etag-updated-at"))
+				// Expect(desiredLRP.LogSource).To(Equal("CELL"))
+				// Expect(desiredLRP.Network).To(Equal(networkInfo))
+				// Expect(desiredLRP.TrustedSystemCertificatesPath).To(Equal(recipebuilder.TrustedSystemCertificatesPath))
 
-				Expect(desiredLRP.Network).To(Equal(networkInfo))
+				Expect(replicationController.Spec.Template.Spec.Containers).To(HaveLen(1))
+				appContainer := replicationController.Spec.Template.Spec.Containers[0]
 
-				expectedSetup := models.Serial(
-					&models.DownloadAction{
-						From:              "http://the-droplet.uri.com",
-						To:                ".",
-						CacheKey:          "droplets-the-app-guid-the-app-version",
-						User:              "vcap",
-						ChecksumAlgorithm: "sha1",
-						ChecksumValue:     "some-hash",
-					},
-				)
-				Expect(desiredLRP.Setup.GetValue()).To(Equal(expectedSetup))
+				Expect(appContainer.Name).To(Equal("application"))
+				Expect(appContainer.Image).To(Equal("cloudfoundry/some-stack:latest"))
+				Expect(appContainer.ImagePullPolicy).To(BeEquivalentTo("IfNotPresent"))
 
-				expectedCacheDependencies := []*models.CachedDependency{
-					&models.CachedDependency{
-						From:     "http://file-server.com/v1/static/some-lifecycle.tgz",
-						To:       "/tmp/lifecycle",
-						CacheKey: "buildpack-some-stack-lifecycle",
-					},
-				}
-				Expect(desiredLRP.CachedDependencies).To(BeEquivalentTo(expectedCacheDependencies))
-				Expect(desiredLRP.LegacyDownloadUser).To(Equal("vcap"))
+				Expect(appContainer.Resources.Limits).To(HaveKeyWithValue(v1.ResourceCPU, resource.MustParse("1000m")))
+				Expect(appContainer.Resources.Limits).To(HaveKeyWithValue(v1.ResourceMemory, resource.MustParse("128Mi")))
+				Expect(appContainer.Resources.Limits).To(HaveKeyWithValue(v1.ResourceName("cloudfoundry.org/storage-space"), resource.MustParse("512Mi")))
+				Expect(appContainer.Resources.Limits).To(HaveKeyWithValue(v1.ResourceName("cloudfoundry.org/file-descriptors"), resource.MustParse("32")))
 
-				parallelRunAction := desiredLRP.Action.CodependentAction
-				Expect(parallelRunAction.Actions).To(HaveLen(1))
+				Expect(appContainer.VolumeMounts).To(ContainElement(v1.VolumeMount{Name: "droplet", MountPath: "/home/vcap/app"}))
+				Expect(appContainer.VolumeMounts).To(ContainElement(v1.VolumeMount{Name: "lifecycle", MountPath: "/tmp/lifecycle", ReadOnly: true}))
 
-				runAction := parallelRunAction.Actions[0].RunAction
+				Expect(appContainer.SecurityContext.Privileged).To(BeNil())
+				Expect(appContainer.SecurityContext.RunAsUser).To(Equal(helpers.Int64Ptr(2000)))
 
-				Expect(desiredLRP.Monitor.GetValue()).To(Equal(models.Timeout(
-					&models.ParallelAction{
-						Actions: []*models.Action{
-							&models.Action{
-								RunAction: &models.RunAction{
-									User:      "vcap",
-									Path:      "/tmp/lifecycle/healthcheck",
-									Args:      []string{"-port=8080"},
-									LogSource: "HEALTH",
-									ResourceLimits: &models.ResourceLimits{
-										Nofile: &defaultNofile,
-									},
-									SuppressLogOutput: true,
-								},
-							},
+				Expect(appContainer.Env).To(ConsistOf(
+					v1.EnvVar{Name: "foo", Value: "bar"},
+					v1.EnvVar{Name: "LANG", Value: recipebuilder.DefaultLANG},
+					v1.EnvVar{Name: "PORT", Value: "8080"},
+					v1.EnvVar{Name: "VCAP_APPLICATION", Value: `{"space_id": "space-guid"}`},
+				))
+
+				Expect(appContainer.Command).To(ConsistOf(
+					"/bin/bash",
+					"-c",
+					`exec /tmp/lifecycle/launcher app "the-start-command with-arguments" "the-execution-metadata"`,
+				))
+
+				Expect(appContainer.Ports).To(ConsistOf(v1.ContainerPort{Protocol: v1.ProtocolTCP, ContainerPort: 8080}))
+
+				initContainers := []v1.Container{}
+				err := json.Unmarshal([]byte(replicationController.Spec.Template.Annotations[v1.PodInitContainersAnnotationKey]), &initContainers)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(initContainers).To(ConsistOf(
+					v1.Container{
+						Name:  "setup",
+						Image: "cloudfoundry/some-stack:latest",
+						VolumeMounts: []v1.VolumeMount{
+							{Name: "droplet", MountPath: "/droplet"},
+							{Name: "lifecycle", MountPath: "/lifecycle"},
+						},
+						Env: []v1.EnvVar{
+							{Name: "LIFECYCLE_URL", Value: "http://file-server.com/v1/static/some-lifecycle.tgz"},
+							{Name: "DROPLET_URL", Value: "http://the-droplet.uri.com"},
+						},
+						// SecurityContext: &v1.SecurityContext{
+						// 	RunAsUser: helpers.Int64Ptr(2000),
+						// },
+						Command: []string{
+							"/bin/bash",
+							"-c",
+							strings.Join([]string{
+								"set -ex",
+								"wget --no-check-certificate -O- $LIFECYCLE_URL | tar -zxv -C /lifecycle",
+								"wget --no-check-certificate -O- $DROPLET_URL | tar -zxv -C /droplet",
+							}, "\n"),
 						},
 					},
-					30*time.Second,
-				)))
-
-				Expect(runAction.Path).To(Equal("/tmp/lifecycle/launcher"))
-				Expect(runAction.Args).To(Equal([]string{
-					"app",
-					"the-start-command with-arguments",
-					"the-execution-metadata",
-				}))
-
-				Expect(runAction.LogSource).To(Equal("MYSOURCE"))
-
-				numFiles := uint64(32)
-				Expect(runAction.ResourceLimits).To(Equal(&models.ResourceLimits{
-					Nofile: &numFiles,
-				}))
-
-				Expect(runAction.Env).To(ContainElement(&models.EnvironmentVariable{
-					Name:  "foo",
-					Value: "bar",
-				}))
-
-				Expect(runAction.Env).To(ContainElement(&models.EnvironmentVariable{
-					Name:  "PORT",
-					Value: "8080",
-				}))
-
-				Expect(desiredLRP.EgressRules).To(ConsistOf(egressRules))
-
-				Expect(desiredLRP.TrustedSystemCertificatesPath).To(Equal(recipebuilder.TrustedSystemCertificatesPath))
+				))
 			})
 
 			Context("when route service url is specified in RoutingInfo", func() {
@@ -266,11 +252,14 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 				})
 
 				It("sets up routes with the route service url", func() {
-					routes := *desiredLRP.Routes
+					routes := models.Routes{}
+					err := json.Unmarshal([]byte(replicationController.ObjectMeta.Annotations["cloudfoundry.org/routing-info"]), &routes)
+					Expect(err).NotTo(HaveOccurred())
+
 					cfRoutesJson := routes[cfroutes.CF_ROUTER]
 					cfRoutes := cfroutes.CFRoutes{}
 
-					err := json.Unmarshal(*cfRoutesJson, &cfRoutes)
+					err = json.Unmarshal(*cfRoutesJson, &cfRoutes)
 					Expect(err).ToNot(HaveOccurred())
 
 					Expect(cfRoutes).To(ConsistOf([]cfroutes.CFRoute{
@@ -280,231 +269,231 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 				})
 			})
 
-			Context("when no health check is specified", func() {
-				BeforeEach(func() {
-					desiredAppReq.HealthCheckType = cc_messages.UnspecifiedHealthCheckType
-				})
+			// Context("when no health check is specified", func() {
+			// 	BeforeEach(func() {
+			// 		desiredAppReq.HealthCheckType = cc_messages.UnspecifiedHealthCheckType
+			// 	})
 
-				It("sets up the port check for backwards compatibility", func() {
-					downloadDestinations := []string{}
-					for _, dep := range desiredLRP.CachedDependencies {
-						if dep != nil {
-							downloadDestinations = append(downloadDestinations, dep.To)
-						}
-					}
+			// 	It("sets up the port check for backwards compatibility", func() {
+			// 		downloadDestinations := []string{}
+			// 		for _, dep := range desiredLRP.CachedDependencies {
+			// 			if dep != nil {
+			// 				downloadDestinations = append(downloadDestinations, dep.To)
+			// 			}
+			// 		}
 
-					Expect(downloadDestinations).To(ContainElement("/tmp/lifecycle"))
+			// 		Expect(downloadDestinations).To(ContainElement("/tmp/lifecycle"))
 
-					Expect(desiredLRP.Monitor.GetValue()).To(Equal(models.Timeout(
-						&models.ParallelAction{
-							Actions: []*models.Action{
-								&models.Action{
-									RunAction: &models.RunAction{
-										User:      "vcap",
-										Path:      "/tmp/lifecycle/healthcheck",
-										Args:      []string{"-port=8080"},
-										LogSource: "HEALTH",
-										ResourceLimits: &models.ResourceLimits{
-											Nofile: &defaultNofile,
-										},
-										SuppressLogOutput: true,
-									},
-								},
-							},
-						},
-						30*time.Second,
-					)))
-				})
-			})
+			// 		Expect(desiredLRP.Monitor.GetValue()).To(Equal(models.Timeout(
+			// 			&models.ParallelAction{
+			// 				Actions: []*models.Action{
+			// 					&models.Action{
+			// 						RunAction: &models.RunAction{
+			// 							User:      "vcap",
+			// 							Path:      "/tmp/lifecycle/healthcheck",
+			// 							Args:      []string{"-port=8080"},
+			// 							LogSource: "HEALTH",
+			// 							ResourceLimits: &models.ResourceLimits{
+			// 								Nofile: &defaultNofile,
+			// 							},
+			// 							SuppressLogOutput: true,
+			// 						},
+			// 					},
+			// 				},
+			// 			},
+			// 			30*time.Second,
+			// 		)))
+			// 	})
+			// })
 
-			Context("when the 'none' health check is specified", func() {
-				BeforeEach(func() {
-					desiredAppReq.HealthCheckType = cc_messages.NoneHealthCheckType
-				})
+			// Context("when the 'none' health check is specified", func() {
+			// 	BeforeEach(func() {
+			// 		desiredAppReq.HealthCheckType = cc_messages.NoneHealthCheckType
+			// 	})
 
-				It("does not populate the monitor action", func() {
-					Expect(desiredLRP.Monitor).To(BeNil())
-				})
+			// 	It("does not populate the monitor action", func() {
+			// 		Expect(desiredLRP.Monitor).To(BeNil())
+			// 	})
 
-				It("still downloads the lifecycle, since we need it for the launcher", func() {
-					downloadDestinations := []string{}
-					for _, dep := range desiredLRP.CachedDependencies {
-						if dep != nil {
-							downloadDestinations = append(downloadDestinations, dep.To)
-						}
-					}
+			// 	It("still downloads the lifecycle, since we need it for the launcher", func() {
+			// 		downloadDestinations := []string{}
+			// 		for _, dep := range desiredLRP.CachedDependencies {
+			// 			if dep != nil {
+			// 				downloadDestinations = append(downloadDestinations, dep.To)
+			// 			}
+			// 		}
 
-					Expect(downloadDestinations).To(ContainElement("/tmp/lifecycle"))
-				})
-			})
+			// 		Expect(downloadDestinations).To(ContainElement("/tmp/lifecycle"))
+			// 	})
+			// })
 
-			Context("when allow ssh is true", func() {
-				BeforeEach(func() {
-					desiredAppReq.AllowSSH = true
+			// Context("when allow ssh is true", func() {
+			// 	BeforeEach(func() {
+			// 		desiredAppReq.AllowSSH = true
 
-					keyPairChan := make(chan keys.KeyPair, 2)
+			// 		keyPairChan := make(chan keys.KeyPair, 2)
 
-					fakeHostKeyPair := &fake_keys.FakeKeyPair{}
-					fakeHostKeyPair.PEMEncodedPrivateKeyReturns("pem-host-private-key")
-					fakeHostKeyPair.FingerprintReturns("host-fingerprint")
+			// 		fakeHostKeyPair := &fake_keys.FakeKeyPair{}
+			// 		fakeHostKeyPair.PEMEncodedPrivateKeyReturns("pem-host-private-key")
+			// 		fakeHostKeyPair.FingerprintReturns("host-fingerprint")
 
-					fakeUserKeyPair := &fake_keys.FakeKeyPair{}
-					fakeUserKeyPair.AuthorizedKeyReturns("authorized-user-key")
-					fakeUserKeyPair.PEMEncodedPrivateKeyReturns("pem-user-private-key")
+			// 		fakeUserKeyPair := &fake_keys.FakeKeyPair{}
+			// 		fakeUserKeyPair.AuthorizedKeyReturns("authorized-user-key")
+			// 		fakeUserKeyPair.PEMEncodedPrivateKeyReturns("pem-user-private-key")
 
-					keyPairChan <- fakeHostKeyPair
-					keyPairChan <- fakeUserKeyPair
+			// 		keyPairChan <- fakeHostKeyPair
+			// 		keyPairChan <- fakeUserKeyPair
 
-					fakeKeyFactory.NewKeyPairStub = func(bits int) (keys.KeyPair, error) {
-						return <-keyPairChan, nil
-					}
-				})
+			// 		fakeKeyFactory.NewKeyPairStub = func(bits int) (keys.KeyPair, error) {
+			// 			return <-keyPairChan, nil
+			// 		}
+			// 	})
 
-				It("setup should download the ssh daemon", func() {
-					expectedCacheDependencies := []*models.CachedDependency{
-						{
-							From:     "http://file-server.com/v1/static/some-lifecycle.tgz",
-							To:       "/tmp/lifecycle",
-							CacheKey: "buildpack-some-stack-lifecycle",
-						},
-					}
+			// 	It("setup should download the ssh daemon", func() {
+			// 		expectedCacheDependencies := []*models.CachedDependency{
+			// 			{
+			// 				From:     "http://file-server.com/v1/static/some-lifecycle.tgz",
+			// 				To:       "/tmp/lifecycle",
+			// 				CacheKey: "buildpack-some-stack-lifecycle",
+			// 			},
+			// 		}
 
-					Expect(desiredLRP.CachedDependencies).To(BeEquivalentTo(expectedCacheDependencies))
-				})
+			// 		Expect(desiredLRP.CachedDependencies).To(BeEquivalentTo(expectedCacheDependencies))
+			// 	})
 
-				It("runs the ssh daemon in the container", func() {
-					expectedNumFiles := uint64(32)
+			// 	It("runs the ssh daemon in the container", func() {
+			// 		expectedNumFiles := uint64(32)
 
-					expectedAction := models.Codependent(
-						&models.RunAction{
-							User: "vcap",
-							Path: "/tmp/lifecycle/launcher",
-							Args: []string{
-								"app",
-								"the-start-command with-arguments",
-								"the-execution-metadata",
-							},
-							Env: []*models.EnvironmentVariable{
-								{Name: "foo", Value: "bar"},
-								{Name: "PORT", Value: "8080"},
-							},
-							ResourceLimits: &models.ResourceLimits{
-								Nofile: &expectedNumFiles,
-							},
-							LogSource: "MYSOURCE",
-						},
-						&models.RunAction{
-							User: "vcap",
-							Path: "/tmp/lifecycle/diego-sshd",
-							Args: []string{
-								"-address=0.0.0.0:2222",
-								"-hostKey=pem-host-private-key",
-								"-authorizedKey=authorized-user-key",
-								"-inheritDaemonEnv",
-								"-logLevel=fatal",
-							},
-							Env: []*models.EnvironmentVariable{
-								{Name: "foo", Value: "bar"},
-								{Name: "PORT", Value: "8080"},
-							},
-							ResourceLimits: &models.ResourceLimits{
-								Nofile: &expectedNumFiles,
-							},
-						},
-					)
+			// 		expectedAction := models.Codependent(
+			// 			&models.RunAction{
+			// 				User: "vcap",
+			// 				Path: "/tmp/lifecycle/launcher",
+			// 				Args: []string{
+			// 					"app",
+			// 					"the-start-command with-arguments",
+			// 					"the-execution-metadata",
+			// 				},
+			// 				Env: []*models.EnvironmentVariable{
+			// 					{Name: "foo", Value: "bar"},
+			// 					{Name: "PORT", Value: "8080"},
+			// 				},
+			// 				ResourceLimits: &models.ResourceLimits{
+			// 					Nofile: &expectedNumFiles,
+			// 				},
+			// 				LogSource: "MYSOURCE",
+			// 			},
+			// 			&models.RunAction{
+			// 				User: "vcap",
+			// 				Path: "/tmp/lifecycle/diego-sshd",
+			// 				Args: []string{
+			// 					"-address=0.0.0.0:2222",
+			// 					"-hostKey=pem-host-private-key",
+			// 					"-authorizedKey=authorized-user-key",
+			// 					"-inheritDaemonEnv",
+			// 					"-logLevel=fatal",
+			// 				},
+			// 				Env: []*models.EnvironmentVariable{
+			// 					{Name: "foo", Value: "bar"},
+			// 					{Name: "PORT", Value: "8080"},
+			// 				},
+			// 				ResourceLimits: &models.ResourceLimits{
+			// 					Nofile: &expectedNumFiles,
+			// 				},
+			// 			},
+			// 		)
 
-					Expect(desiredLRP.Action.GetValue()).To(Equal(expectedAction))
-				})
+			// 		Expect(desiredLRP.Action.GetValue()).To(Equal(expectedAction))
+			// 	})
 
-				It("opens up the default ssh port", func() {
-					Expect(desiredLRP.Ports).To(Equal([]uint32{
-						8080,
-						2222,
-					}))
-				})
+			// 	It("opens up the default ssh port", func() {
+			// 		Expect(desiredLRP.Ports).To(Equal([]uint32{
+			// 			8080,
+			// 			2222,
+			// 		}))
+			// 	})
 
-				It("declares ssh routing information in the LRP", func() {
-					cfRoutePayload, err := json.Marshal(cfroutes.CFRoutes{
-						{Hostnames: []string{"route1", "route2"}, Port: 8080},
-					})
-					Expect(err).NotTo(HaveOccurred())
+			// 	It("declares ssh routing information in the LRP", func() {
+			// 		cfRoutePayload, err := json.Marshal(cfroutes.CFRoutes{
+			// 			{Hostnames: []string{"route1", "route2"}, Port: 8080},
+			// 		})
+			// 		Expect(err).NotTo(HaveOccurred())
 
-					sshRoutePayload, err := json.Marshal(routes.SSHRoute{
-						ContainerPort:   2222,
-						PrivateKey:      "pem-user-private-key",
-						HostFingerprint: "host-fingerprint",
-					})
-					Expect(err).NotTo(HaveOccurred())
+			// 		sshRoutePayload, err := json.Marshal(routes.SSHRoute{
+			// 			ContainerPort:   2222,
+			// 			PrivateKey:      "pem-user-private-key",
+			// 			HostFingerprint: "host-fingerprint",
+			// 		})
+			// 		Expect(err).NotTo(HaveOccurred())
 
-					cfRouteMessage := json.RawMessage(cfRoutePayload)
-					tcpRouteMessage := json.RawMessage([]byte("[]"))
-					sshRouteMessage := json.RawMessage(sshRoutePayload)
+			// 		cfRouteMessage := json.RawMessage(cfRoutePayload)
+			// 		tcpRouteMessage := json.RawMessage([]byte("[]"))
+			// 		sshRouteMessage := json.RawMessage(sshRoutePayload)
 
-					Expect(desiredLRP.Routes).To(Equal(&models.Routes{
-						cfroutes.CF_ROUTER:    &cfRouteMessage,
-						tcp_routes.TCP_ROUTER: &tcpRouteMessage,
-						routes.DIEGO_SSH:      &sshRouteMessage,
-					}))
-				})
+			// 		Expect(desiredLRP.Routes).To(Equal(&models.Routes{
+			// 			cfroutes.CF_ROUTER:    &cfRouteMessage,
+			// 			tcp_routes.TCP_ROUTER: &tcpRouteMessage,
+			// 			routes.DIEGO_SSH:      &sshRouteMessage,
+			// 		}))
+			// 	})
 
-				Context("when generating the host key fails", func() {
-					BeforeEach(func() {
-						fakeKeyFactory.NewKeyPairReturns(nil, errors.New("boom"))
-					})
+			// 	Context("when generating the host key fails", func() {
+			// 		BeforeEach(func() {
+			// 			fakeKeyFactory.NewKeyPairReturns(nil, errors.New("boom"))
+			// 		})
 
-					It("should return an error", func() {
-						Expect(err).To(HaveOccurred())
-					})
-				})
+			// 		It("should return an error", func() {
+			// 			Expect(err).To(HaveOccurred())
+			// 		})
+			// 	})
 
-				Context("when generating the user key fails", func() {
-					BeforeEach(func() {
-						errorCh := make(chan error, 2)
-						errorCh <- nil
-						errorCh <- errors.New("woops")
+			// 	Context("when generating the user key fails", func() {
+			// 		BeforeEach(func() {
+			// 			errorCh := make(chan error, 2)
+			// 			errorCh <- nil
+			// 			errorCh <- errors.New("woops")
 
-						fakeKeyFactory.NewKeyPairStub = func(bits int) (keys.KeyPair, error) {
-							return nil, <-errorCh
-						}
-					})
+			// 			fakeKeyFactory.NewKeyPairStub = func(bits int) (keys.KeyPair, error) {
+			// 				return nil, <-errorCh
+			// 			}
+			// 		})
 
-					It("should return an error", func() {
-						Expect(err).To(HaveOccurred())
-					})
-				})
-			})
+			// 		It("should return an error", func() {
+			// 			Expect(err).To(HaveOccurred())
+			// 		})
+			// 	})
+			// })
 
-			Context("and it is setting the CPU weight", func() {
-				Context("when the memory limit is below the minimum value", func() {
-					BeforeEach(func() {
-						desiredAppReq.MemoryMB = recipebuilder.MinCpuProxy - 9999
-					})
+			// Context("and it is setting the CPU weight", func() {
+			// 	Context("when the memory limit is below the minimum value", func() {
+			// 		BeforeEach(func() {
+			// 			desiredAppReq.MemoryMB = recipebuilder.MinCpuProxy - 9999
+			// 		})
 
-					It("returns 1", func() {
-						Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(1))
-					})
-				})
+			// 		It("returns 1", func() {
+			// 			Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(1))
+			// 		})
+			// 	})
 
-				Context("when the memory limit is above the maximum value", func() {
-					BeforeEach(func() {
-						desiredAppReq.MemoryMB = recipebuilder.MaxCpuProxy + 9999
-					})
+			// 	Context("when the memory limit is above the maximum value", func() {
+			// 		BeforeEach(func() {
+			// 			desiredAppReq.MemoryMB = recipebuilder.MaxCpuProxy + 9999
+			// 		})
 
-					It("returns 100", func() {
-						Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(100))
-					})
-				})
+			// 		It("returns 100", func() {
+			// 			Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(100))
+			// 		})
+			// 	})
 
-				Context("when the memory limit is in between the minimum and maximum value", func() {
-					BeforeEach(func() {
-						desiredAppReq.MemoryMB = (recipebuilder.MinCpuProxy + recipebuilder.MaxCpuProxy) / 2
-					})
+			// 	Context("when the memory limit is in between the minimum and maximum value", func() {
+			// 		BeforeEach(func() {
+			// 			desiredAppReq.MemoryMB = (recipebuilder.MinCpuProxy + recipebuilder.MaxCpuProxy) / 2
+			// 		})
 
-					It("returns 50", func() {
-						Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(50))
-					})
-				})
-			})
+			// 		It("returns 50", func() {
+			// 			Expect(desiredLRP.CpuWeight).To(BeEquivalentTo(50))
+			// 		})
+			// 	})
+			// })
 		})
 
 		Context("when there is a docker image url AND a droplet uri", func() {
@@ -539,17 +528,14 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			})
 
 			It("sets a default FD limit on the run action", func() {
-				parallelRunAction := desiredLRP.Action.CodependentAction
-				Expect(parallelRunAction.Actions).To(HaveLen(1))
+				Expect(replicationController.Spec.Template.Spec.Containers).To(HaveLen(1))
 
-				runAction := parallelRunAction.Actions[0].RunAction
-
-				Expect(runAction.ResourceLimits.Nofile).NotTo(BeNil())
-				Expect(*runAction.ResourceLimits.Nofile).To(Equal(recipebuilder.DefaultFileDescriptorLimit))
+				appContainer := replicationController.Spec.Template.Spec.Containers[0]
+				Expect(appContainer.Resources.Limits).To(HaveKeyWithValue(v1.ResourceName("cloudfoundry.org/file-descriptors"), resource.MustParse(fmt.Sprintf("%d", recipebuilder.DefaultFileDescriptorLimit))))
 			})
 		})
 
-		Context("when requesting a stack with no associated health-check", func() {
+		Context("when requesting a stack that has not been configured", func() {
 			BeforeEach(func() {
 				desiredAppReq.Stack = "some-other-stack"
 			})
@@ -565,54 +551,59 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			})
 
 			It("builds a DesiredLRP with the correct ports", func() {
-				Expect(desiredLRP.Ports).To(Equal([]uint32{1456, 2345, 3456}))
+				Expect(replicationController.Spec.Template.Spec.Containers).To(HaveLen(1))
+				Expect(replicationController.Spec.Template.Spec.Containers[0].Ports).To(ConsistOf(
+					v1.ContainerPort{Protocol: v1.ProtocolTCP, ContainerPort: 1456},
+					v1.ContainerPort{Protocol: v1.ProtocolTCP, ContainerPort: 2345},
+					v1.ContainerPort{Protocol: v1.ProtocolTCP, ContainerPort: 3456},
+				))
 			})
 
-			It("sets the health check to the first provided port", func() {
-				Expect(desiredLRP.Monitor.GetValue()).To(Equal(models.Timeout(
-					&models.ParallelAction{
-						Actions: []*models.Action{
-							&models.Action{
-								RunAction: &models.RunAction{
-									User:      "vcap",
-									Path:      "/tmp/lifecycle/healthcheck",
-									Args:      []string{"-port=1456"},
-									LogSource: "HEALTH",
-									ResourceLimits: &models.ResourceLimits{
-										Nofile: &defaultNofile,
-									},
-									SuppressLogOutput: true,
-								},
-							},
-							&models.Action{
-								RunAction: &models.RunAction{
-									User:      "vcap",
-									Path:      "/tmp/lifecycle/healthcheck",
-									Args:      []string{"-port=2345"},
-									LogSource: "HEALTH",
-									ResourceLimits: &models.ResourceLimits{
-										Nofile: &defaultNofile,
-									},
-									SuppressLogOutput: true,
-								},
-							},
-							&models.Action{
-								RunAction: &models.RunAction{
-									User:      "vcap",
-									Path:      "/tmp/lifecycle/healthcheck",
-									Args:      []string{"-port=3456"},
-									LogSource: "HEALTH",
-									ResourceLimits: &models.ResourceLimits{
-										Nofile: &defaultNofile,
-									},
-									SuppressLogOutput: true,
-								},
-							},
-						},
-					},
-					30*time.Second,
-				)))
-			})
+			// 	It("sets the health check to the first provided port", func() {
+			// 		Expect(desiredLRP.Monitor.GetValue()).To(Equal(models.Timeout(
+			// 			&models.ParallelAction{
+			// 				Actions: []*models.Action{
+			// 					&models.Action{
+			// 						RunAction: &models.RunAction{
+			// 							User:      "vcap",
+			// 							Path:      "/tmp/lifecycle/healthcheck",
+			// 							Args:      []string{"-port=1456"},
+			// 							LogSource: "HEALTH",
+			// 							ResourceLimits: &models.ResourceLimits{
+			// 								Nofile: &defaultNofile,
+			// 							},
+			// 							SuppressLogOutput: true,
+			// 						},
+			// 					},
+			// 					&models.Action{
+			// 						RunAction: &models.RunAction{
+			// 							User:      "vcap",
+			// 							Path:      "/tmp/lifecycle/healthcheck",
+			// 							Args:      []string{"-port=2345"},
+			// 							LogSource: "HEALTH",
+			// 							ResourceLimits: &models.ResourceLimits{
+			// 								Nofile: &defaultNofile,
+			// 							},
+			// 							SuppressLogOutput: true,
+			// 						},
+			// 					},
+			// 					&models.Action{
+			// 						RunAction: &models.RunAction{
+			// 							User:      "vcap",
+			// 							Path:      "/tmp/lifecycle/healthcheck",
+			// 							Args:      []string{"-port=3456"},
+			// 							LogSource: "HEALTH",
+			// 							ResourceLimits: &models.ResourceLimits{
+			// 								Nofile: &defaultNofile,
+			// 							},
+			// 							SuppressLogOutput: true,
+			// 						},
+			// 					},
+			// 				},
+			// 			},
+			// 			30*time.Second,
+			// 		)))
+			// 	})
 		})
 
 		Context("when log source is empty", func() {
@@ -621,38 +612,36 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 			})
 
 			It("uses APP", func() {
-				parallelRunAction := desiredLRP.Action.CodependentAction
-				runAction := parallelRunAction.Actions[0].RunAction
-				Expect(runAction.LogSource).To(Equal("APP"))
+				Expect(replicationController.ObjectMeta.Annotations).To(HaveKeyWithValue("cloudfoundry.org/log-source", "APP"))
 			})
 		})
 
-		Describe("volume mounts", func() {
-			Context("when none are provided", func() {
-				It("is empty", func() {
-					Expect(len(desiredLRP.VolumeMounts)).To(Equal(0))
-				})
-			})
+		// Describe("volume mounts", func() {
+		// 	Context("when none are provided", func() {
+		// 		It("is empty", func() {
+		// 			Expect(len(desiredLRP.VolumeMounts)).To(Equal(0))
+		// 		})
+		// 	})
 
-			Context("when some are provided", func() {
-				var testVolume models.VolumeMount
+		// 	Context("when some are provided", func() {
+		// 		var testVolume models.VolumeMount
 
-				BeforeEach(func() {
-					testVolume = models.VolumeMount{
-						Driver:        "testdriver",
-						VolumeId:      "volumeId",
-						ContainerPath: "/Volumes/myvol",
-						Mode:          models.BindMountMode_RW,
-						Config:        []byte("config stuff"),
-					}
-					desiredAppReq.VolumeMounts = []*models.VolumeMount{&testVolume}
-				})
+		// 		BeforeEach(func() {
+		// 			testVolume = models.VolumeMount{
+		// 				Driver:        "testdriver",
+		// 				VolumeId:      "volumeId",
+		// 				ContainerPath: "/Volumes/myvol",
+		// 				Mode:          models.BindMountMode_RW,
+		// 				Config:        []byte("config stuff"),
+		// 			}
+		// 			desiredAppReq.VolumeMounts = []*models.VolumeMount{&testVolume}
+		// 		})
 
-				It("desires the mounts", func() {
-					Expect(desiredLRP.VolumeMounts).To(Equal([]*models.VolumeMount{&testVolume}))
-				})
-			})
-		})
+		// 		It("desires the mounts", func() {
+		// 			Expect(desiredLRP.VolumeMounts).To(Equal([]*models.VolumeMount{&testVolume}))
+		// 		})
+		// 	})
+		// })
 	})
 
 	Describe("ExtractExposedPorts", func() {
@@ -867,3 +856,10 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 		})
 	})
 })
+
+func MustEncode(value interface{}) string {
+	encoded, err := json.Marshal(value)
+	Expect(err).NotTo(HaveOccurred())
+
+	return string(encoded)
+}
