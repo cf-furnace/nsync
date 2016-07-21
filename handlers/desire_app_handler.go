@@ -173,7 +173,7 @@ func sanitizeRoutes(routes *models.Routes) *models.Routes {
 // TODO: when we know how to get space_id from stop_app req, we can use real space id.  for now, use application_id
 func getSpaceGuid(desireAppMessage cc_messages.DesireAppRequestFromCC) (string, error) {
 	var vcapApplications struct {
-		SpaceGUID string `json:"application_id"`
+		SpaceGUID string `json:"space_id"`
 	}
 
 	for _, env := range desireAppMessage.Environment {

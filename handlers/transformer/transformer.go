@@ -20,6 +20,7 @@ func DesiredAppToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desire
 
 func DesiredAppDropletToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desiredApp cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {
 	shortenedProcessGuid := processGuid.ShortenedGuid()
+	dnsHack := true
 
 	var env string
 	for _, envVar := range desiredApp.Environment {
@@ -34,35 +35,77 @@ func DesiredAppDropletToRC(logger lager.Logger, processGuid helpers.ProcessGuid,
 
 	env = strings.TrimPrefix(env+",PORT=8080", ",")
 
-	rc := &v1.ReplicationController{
-		ObjectMeta: v1.ObjectMeta{Name: shortenedProcessGuid},
-		Spec: v1.ReplicationControllerSpec{
-			Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
-			Selector: map[string]string{"name": shortenedProcessGuid},
-			Template: &v1.PodTemplateSpec{
-				ObjectMeta: v1.ObjectMeta{
-					Name: shortenedProcessGuid,
-					Labels: map[string]string{
-						"name": shortenedProcessGuid,
+	if dnsHack == true {
+		dropletURI := strings.Replace(desiredApp.DropletUri, "cloud-controller-ng.service.cf.internal", "10.244.0.138", 1)
+		rc := &v1.ReplicationController{
+			ObjectMeta: v1.ObjectMeta{Name: shortenedProcessGuid},
+			Spec: v1.ReplicationControllerSpec{
+				Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
+				Selector: map[string]string{"name": shortenedProcessGuid},
+				Template: &v1.PodTemplateSpec{
+					ObjectMeta: v1.ObjectMeta{
+						Name: shortenedProcessGuid,
+						Labels: map[string]string{
+							"name": shortenedProcessGuid,
+						},
+					},
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{
+							Name:  fmt.Sprintf("%s-r", shortenedProcessGuid),
+							Image: "linsun/k8s-runner:latest",
+							Env: []v1.EnvVar{
+								{Name: "STARTCMD", Value: desiredApp.StartCommand},
+								{Name: "ENVVARS", Value: env},
+								{Name: "PORT", Value: "8080"},
+								{Name: "DROPLETURI", Value: dropletURI},
+							},
+							VolumeMounts: []v1.VolumeMount{{
+								Name:      "etc-hosts-volume",
+								MountPath: "/etc/hosts",
+							}},
+						}},
+						Volumes: []v1.Volume{{
+							Name: "etc-hosts-volume",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{Path: "/tmp/etc/hosts"},
+							},
+						}},
 					},
 				},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{{
-						Name:  fmt.Sprintf("%s-r", shortenedProcessGuid),
-						Image: "linsun/k8s-runner:latest",
-						Env: []v1.EnvVar{
-							{Name: "STARTCMD", Value: desiredApp.StartCommand},
-							{Name: "ENVVARS", Value: env},
-							{Name: "PORT", Value: "8080"},
-							{Name: "DROPLETURI", Value: desiredApp.DropletUri},
+			},
+		}
+		return rc, nil
+	} else {
+		rc := &v1.ReplicationController{
+			ObjectMeta: v1.ObjectMeta{Name: shortenedProcessGuid},
+			Spec: v1.ReplicationControllerSpec{
+				Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
+				Selector: map[string]string{"name": shortenedProcessGuid},
+				Template: &v1.PodTemplateSpec{
+					ObjectMeta: v1.ObjectMeta{
+						Name: shortenedProcessGuid,
+						Labels: map[string]string{
+							"name": shortenedProcessGuid,
 						},
-					}},
+					},
+					Spec: v1.PodSpec{
+						Containers: []v1.Container{{
+							Name:  fmt.Sprintf("%s-r", shortenedProcessGuid),
+							Image: "linsun/k8s-runner:latest",
+							Env: []v1.EnvVar{
+								{Name: "STARTCMD", Value: desiredApp.StartCommand},
+								{Name: "ENVVARS", Value: env},
+								{Name: "PORT", Value: "8080"},
+								{Name: "DROPLETURI", Value: desiredApp.DropletUri},
+							},
+						}},
+					},
 				},
 			},
-		},
+		}
+		return rc, nil
 	}
 
-	return rc, nil
 }
 
 func DesiredAppImageToRC(logger lager.Logger, processGuid helpers.ProcessGuid, desiredApp cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {

@@ -48,7 +48,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	rcGUID := pg.ShortenedGuid()
 	spaceID := rcGUID
 
-	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
+	rc, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).Get(rcGUID)
 	logger.Info("returned rc is ", lager.Data{"rc": rc})
 	if rc != nil {
 		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
