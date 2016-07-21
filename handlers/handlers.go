@@ -11,8 +11,14 @@ import (
 	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
 )
 
-func New(logger lager.Logger, bbsClient bbs.Client, recipebuilders map[string]recipebuilder.RecipeBuilder, k8sClient v1core.CoreInterface) http.Handler {
-	desireAppHandler := NewDesireAppHandler(logger, k8sClient)
+func New(
+	logger lager.Logger,
+	bbsClient bbs.Client,
+	recipebuilders map[string]recipebuilder.RecipeBuilder,
+	furnaceBuilders map[string]recipebuilder.FurnaceRecipeBuilder,
+	k8sClient v1core.CoreInterface,
+) http.Handler {
+	desireAppHandler := NewDesireAppHandler(logger, furnaceBuilders, k8sClient)
 	stopAppHandler := NewStopAppHandler(logger, k8sClient)
 	killIndexHandler := NewKillIndexHandler(logger, bbsClient)
 	taskHandler := NewTaskHandler(logger, bbsClient, recipebuilders)

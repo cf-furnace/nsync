@@ -2,12 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
 	"github.com/cloudfoundry-incubator/nsync/helpers"
+	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
 	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
@@ -25,14 +24,16 @@ const (
 )
 
 type DesireAppHandler struct {
-	logger    lager.Logger
-	k8sClient v1core.CoreInterface
+	logger         lager.Logger
+	recipeBuilders map[string]recipebuilder.FurnaceRecipeBuilder
+	k8sClient      v1core.CoreInterface
 }
 
-func NewDesireAppHandler(logger lager.Logger, k8sClient v1core.CoreInterface) *DesireAppHandler {
+func NewDesireAppHandler(logger lager.Logger, builders map[string]recipebuilder.FurnaceRecipeBuilder, k8sClient v1core.CoreInterface) *DesireAppHandler {
 	return &DesireAppHandler{
-		logger:    logger,
-		k8sClient: k8sClient,
+		logger:         logger,
+		recipeBuilders: builders,
+		k8sClient:      k8sClient,
 	}
 }
 
@@ -63,7 +64,7 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 		return
 	}
 
-	spaceGuid, err := getSpaceGuid(desiredApp)
+	spaceGuid, err := recipebuilder.GetSpaceGuid(desiredApp)
 	if err != nil || spaceGuid == "" {
 		logger.Error("missing-space-guid", err)
 		resp.WriteHeader(http.StatusBadRequest)
@@ -87,7 +88,7 @@ func (h *DesireAppHandler) DesireApp(resp http.ResponseWriter, req *http.Request
 	if err == nil {
 		err = h.updateReplicationController(logger, replicationController, desiredApp)
 	} else {
-		err = h.createReplicationController(logger, procGuid, desiredApp, spaceGuid)
+		err = h.createReplicationController(logger, &desiredApp, spaceGuid)
 	}
 
 	if err == nil {
@@ -121,13 +122,13 @@ func (h *DesireAppHandler) findOrCreateNamespace(logger lager.Logger, namespace 
 
 func (h *DesireAppHandler) createReplicationController(
 	logger lager.Logger,
-	processGuid helpers.ProcessGuid,
-	desiredApp cc_messages.DesireAppRequestFromCC,
+	desiredApp *cc_messages.DesireAppRequestFromCC,
 	namespace string,
 ) error {
 	logger = logger.Session("create-replication-controller")
 
-	replicationController, err := transformer.DesiredAppToRC(logger, processGuid, desiredApp)
+	builder := h.recipeBuilders["buildpack"]
+	replicationController, err := builder.BuildReplicationController(desiredApp)
 	if err != nil {
 		logger.Fatal("failed-to-transform-desired-app-to-rc", err)
 	}
@@ -168,19 +169,4 @@ func sanitizeRoutes(routes *models.Routes) *models.Routes {
 		newRoutes[tcp_routes.TCP_ROUTER] = cfRoutes[tcp_routes.TCP_ROUTER]
 	}
 	return &newRoutes
-}
-
-func getSpaceGuid(desireAppMessage cc_messages.DesireAppRequestFromCC) (string, error) {
-	var vcapApplications struct {
-		SpaceGuid string `json:"space_id"`
-	}
-
-	for _, env := range desireAppMessage.Environment {
-		if env.Name == "VCAP_APPLICATION" {
-			err := json.Unmarshal([]byte(env.Value), &vcapApplications)
-			return vcapApplications.SpaceGuid, err
-		}
-	}
-
-	return "", errors.New("Missing space guid")
 }

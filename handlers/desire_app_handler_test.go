@@ -9,10 +9,11 @@ import (
 	"net/url"
 
 	"github.com/cloudfoundry-incubator/bbs/models"
+	bulkfakes "github.com/cloudfoundry-incubator/nsync/bulk/fakes"
 	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/cloudfoundry-incubator/nsync/handlers/fakes"
-	"github.com/cloudfoundry-incubator/nsync/handlers/transformer"
 	"github.com/cloudfoundry-incubator/nsync/helpers"
+	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
 	"github.com/cloudfoundry/dropsonde/metrics"
@@ -34,6 +35,8 @@ var _ = Describe("DesireAppHandler", func() {
 		desireAppRequest cc_messages.DesireAppRequestFromCC
 		processGuid      helpers.ProcessGuid
 		metricSender     *fake.FakeMetricSender
+		builders         map[string]recipebuilder.FurnaceRecipeBuilder
+		fakeBuilder      *bulkfakes.FakeFurnaceRecipeBuilder
 
 		request          *http.Request
 		responseRecorder *httptest.ResponseRecorder
@@ -45,6 +48,11 @@ var _ = Describe("DesireAppHandler", func() {
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
+
+		fakeBuilder = &bulkfakes.FakeFurnaceRecipeBuilder{}
+		builders = map[string]recipebuilder.FurnaceRecipeBuilder{
+			"buildpack": fakeBuilder,
+		}
 
 		fakeNamespace = &fakes.FakeNamespace{}
 		fakeNamespace.GetReturns(&v1.Namespace{
@@ -126,7 +134,7 @@ var _ = Describe("DesireAppHandler", func() {
 			request.Body = ioutil.NopCloser(reader)
 		}
 
-		handler := handlers.NewDesireAppHandler(logger, fakeKubeClient)
+		handler := handlers.NewDesireAppHandler(logger, builders, fakeKubeClient)
 		handler.DesireApp(responseRecorder, request)
 	})
 
@@ -154,7 +162,16 @@ var _ = Describe("DesireAppHandler", func() {
 	})
 
 	Context("when the replciation controller for the app is missing", func() {
-		It("creates a replication controllers", func() {
+		var expectedRC *v1.ReplicationController
+
+		BeforeEach(func() {
+			expectedRC = &v1.ReplicationController{
+				ObjectMeta: v1.ObjectMeta{Name: "some-name"},
+			}
+			fakeBuilder.BuildReplicationControllerReturns(expectedRC, nil)
+		})
+
+		It("creates a replication controller", func() {
 			Expect(fakeKubeClient.ReplicationControllersCallCount()).To(Equal(2))
 			Expect(fakeKubeClient.ReplicationControllersArgsForCall(0)).To(Equal("my-space-id"))
 			Expect(fakeKubeClient.ReplicationControllersArgsForCall(1)).To(Equal("my-space-id"))
@@ -162,8 +179,7 @@ var _ = Describe("DesireAppHandler", func() {
 			Expect(fakeReplicationController.GetCallCount()).To(Equal(1))
 			Expect(fakeReplicationController.GetArgsForCall(0)).To(Equal(processGuid.ShortenedGuid()))
 
-			expectedRC, err := transformer.DesiredAppToRC(logger, processGuid, desireAppRequest)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeBuilder.BuildReplicationControllerCallCount()).To(Equal(1))
 
 			Expect(fakeReplicationController.CreateCallCount()).To(Equal(1))
 			Expect(fakeReplicationController.CreateArgsForCall(0)).To(Equal(expectedRC))
