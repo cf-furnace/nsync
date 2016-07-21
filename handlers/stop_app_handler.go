@@ -7,6 +7,7 @@ import (
 	"github.com/pivotal-golang/lager"
 	"k8s.io/kubernetes/pkg/api"
 	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
+	"k8s.io/kubernetes/pkg/labels"
 )
 
 type StopAppHandler struct {
@@ -48,9 +49,12 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	rcGUID := pg.ShortenedGuid()
 	spaceID := rcGUID
 
-	rc, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).Get(rcGUID)
-	logger.Info("returned rc is ", lager.Data{"rc": rc})
-	if rc != nil {
+	rcList, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
+		LabelSelector: labels.Set(map[string]string{"name": rcGUID}).AsSelector(),
+	})
+	logger.Info("returned rc list is ", lager.Data{"rc list": rcList})
+	if rcList != nil && rcList.Size() > 0 {
+		rc := rcList.Items[1]
 		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
 			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
