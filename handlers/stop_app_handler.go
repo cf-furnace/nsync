@@ -7,7 +7,6 @@ import (
 	"github.com/pivotal-golang/lager"
 	"k8s.io/kubernetes/pkg/api"
 	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
-	"k8s.io/kubernetes/pkg/labels"
 )
 
 type StopAppHandler struct {
@@ -47,16 +46,11 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 		panic(err)
 	}
 	rcGUID := pg.ShortenedGuid()
-	//spaceID := rcGUID
+	spaceID := rcGUID
 
-	rcList, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
-		LabelSelector: labels.Set(map[string]string{"name": rcGUID}).AsSelector(),
-	})
-	logger.Info("returned rc list is ", lager.Data{"rc list": rcList})
-	if rcList != nil && rcList.Size() > 0 {
-		rc := rcList.Items[0]
-		logger.Debug("rc is ", lager.Data{"rc": rc})
-		logger.Debug("namespace is ", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
+	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
+	logger.Info("returned rc is ", lager.Data{"rc": rc})
+	if rc != nil {
 		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
 			h.logger.Debug("desired-lrp not found")
 			resp.WriteHeader(http.StatusNotFound)
@@ -69,16 +63,15 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 				h.logger.Error("error-check-rc-exist", err)
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
-			} //else {
-			//h.logger.Debug("deleting pod within RC")
-			//podSpec := &rc.Spec.Template.Spec
-			//for _, element := range podSpec.Containers {
-			//	h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
-			//}
-			//}
-			//b := true
-			logger.Debug("deleting the rc", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
-			err := h.k8sClient.ReplicationControllers(rc.ObjectMeta.GetNamespace()).Delete(rcGUID, &api.DeleteOptions{})
+			} else {
+				h.logger.Error("error-check-rc-not-exist", err)
+				podSpec := &rc.Spec.Template.Spec
+				for _, element := range podSpec.Containers {
+					h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
+				}
+			}
+
+			err := h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID, nil)
 			if err != nil {
 				h.logger.Error("failed-to-remove-desired-lrp", err)
 

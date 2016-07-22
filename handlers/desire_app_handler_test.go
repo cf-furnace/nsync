@@ -99,7 +99,8 @@ var _ = Describe("DesireAppHandler", func() {
 				{Name: "VCAP_APPLICATION", Value: `{
 					"application_name":"my-app",
 					"space_id":"my-space-id",
-					"application_id":"my-very-long-application-id"
+					"application_id":
+					"my-very-long-application-id"
 				}`},
 				{Name: "VCAP_SERVICES", Value: "{}"},
 			},
