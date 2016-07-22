@@ -69,14 +69,8 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 				h.logger.Error("error-check-rc-exist", err)
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
-			} //else {
-			//h.logger.Debug("deleting pod within RC")
-			//podSpec := &rc.Spec.Template.Spec
-			//for _, element := range podSpec.Containers {
-			//	h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
-			//}
-			//}
-			//b := true
+			}
+
 			logger.Debug("deleting the rc", lager.Data{"namespace": rc.ObjectMeta.GetNamespace()})
 			err := h.k8sClient.ReplicationControllers(rc.ObjectMeta.GetNamespace()).Delete(rcGUID, &api.DeleteOptions{})
 			if err != nil {
@@ -85,6 +79,13 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 				resp.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
+
+			h.logger.Debug("deleting pod within RC")
+			podSpec := &rc.Spec.Template.Spec
+			for _, element := range podSpec.Containers {
+				h.k8sClient.Pods(rc.ObjectMeta.GetNamespace()).Delete(element.Name, &api.DeleteOptions{})
+			}
+
 			h.logger.Debug("removed-desired-lrp")
 
 			resp.WriteHeader(http.StatusAccepted)
