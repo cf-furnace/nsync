@@ -6,7 +6,9 @@ import (
 	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/pivotal-golang/lager"
 	"k8s.io/kubernetes/pkg/api"
+	kubeerrors "k8s.io/kubernetes/pkg/api/errors"
 	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
+	"k8s.io/kubernetes/pkg/labels"
 )
 
 type StopAppHandler struct {
@@ -31,7 +33,7 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	})
 
 	if processGuid == "" {
-		h.logger.Error("missing-process-guid", missingParameterErr)
+		logger.Error("missing-process-guid", missingParameterErr)
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -39,52 +41,68 @@ func (h *StopAppHandler) StopApp(resp http.ResponseWriter, req *http.Request) {
 	logger.Info("serving")
 	defer logger.Info("complete")
 
-	logger.Debug("removing-desired-lrp")
-
 	pg, err := helpers.NewProcessGuid(processGuid)
 	if err != nil {
-		panic(err)
+		logger.Error("invalid-process-guid", err)
+		resp.WriteHeader(http.StatusBadRequest)
+		return
 	}
-	rcGUID := pg.ShortenedGuid()
-	spaceID := rcGUID
 
-	rc, err := h.k8sClient.ReplicationControllers(spaceID).Get(rcGUID)
-	logger.Info("returned rc is ", lager.Data{"rc": rc})
-	if rc != nil {
-		if err != nil && err.Error() == "replicationcontrollers \""+rcGUID+"\" not found" {
-			h.logger.Debug("desired-lrp not found")
-			resp.WriteHeader(http.StatusNotFound)
-		} else {
-			if err != nil && err.Error() == "replicationcontrollers found but no pods" {
-				// ignore:  tests with fake replicationControllers
-				h.logger.Debug("ignore deleting pod")
-			} else if err != nil {
-				// return service unavailable on all other err
-				h.logger.Error("error-check-rc-exist", err)
-				resp.WriteHeader(http.StatusServiceUnavailable)
-				return
-			} else {
-				h.logger.Error("error-check-rc-not-exist", err)
-				podSpec := &rc.Spec.Template.Spec
-				for _, element := range podSpec.Containers {
-					h.k8sClient.Pods(spaceID).Delete(element.Name, &api.DeleteOptions{})
-				}
-			}
+	rcList, err := h.k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
+		LabelSelector: labels.Set{"cloudfoundry.org/process-guid": pg.ShortenedGuid()}.AsSelector(),
+	})
 
-			err := h.k8sClient.ReplicationControllers(spaceID).Delete(rcGUID, nil)
-			if err != nil {
-				h.logger.Error("failed-to-remove-desired-lrp", err)
+	if err != nil {
+		logger.Error("replication-controller-list-failed", err)
+		resp.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-				resp.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-			h.logger.Debug("removed-desired-lrp")
-
-			resp.WriteHeader(http.StatusAccepted)
-		}
-	} else {
-		h.logger.Info("already deleted, nothing to delete", lager.Data{"process-guid": processGuid})
+	if len(rcList.Items) == 0 {
+		logger.Info("desired-lrp-not-found")
 		resp.WriteHeader(http.StatusNotFound)
 		return
+	}
+
+	for _, rcValue := range rcList.Items {
+		rc := &rcValue
+		rc.Spec.Replicas = helpers.Int32Ptr(0)
+
+		rc, err = h.k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Update(rc)
+		if err != nil {
+			logger.Error("update-replication-controller-failed", err)
+			code := responseCodeFromError(err)
+			if code == http.StatusNotFound {
+				continue
+			}
+			resp.WriteHeader(code)
+			return
+		}
+
+		if err := h.k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Delete(rc.Name, nil); err != nil {
+			logger.Error("delete-replication-controller-failed", err)
+			code := responseCodeFromError(err)
+			if code == http.StatusNotFound {
+				continue
+			}
+			resp.WriteHeader(code)
+			return
+		}
+	}
+
+	resp.WriteHeader(http.StatusAccepted)
+}
+
+func responseCodeFromError(err error) int {
+	switch err := err.(type) {
+	case *kubeerrors.StatusError:
+		switch err.ErrStatus.Code {
+		case http.StatusNotFound:
+			return http.StatusNotFound
+		default:
+			return http.StatusInternalServerError
+		}
+	default:
+		return http.StatusInternalServerError
 	}
 }

@@ -6,7 +6,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 
+	"k8s.io/kubernetes/pkg/api"
+	kubeerrors "k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/labels"
 
 	"github.com/cloudfoundry-incubator/nsync/handlers"
 	"github.com/cloudfoundry-incubator/nsync/handlers/fakes"
@@ -16,29 +20,24 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gbytes"
 )
 
 var _ = Describe("StopAppHandler", func() {
 	var (
 		logger                    *lagertest.TestLogger
-		fakeK8s                   *fakes.FakeKubeClient
-		fakeNamespace             *fakes.FakeNamespace
+		fakeClient                *fakes.FakeKubeClient
 		fakeReplicationController *fakes.FakeReplicationController
 
-		request          *http.Request
-		responseRecorder *httptest.ResponseRecorder
+		processGuid               helpers.ProcessGuid
+		replicationControllerList *v1.ReplicationControllerList
 
-		processGuid       helpers.ProcessGuid
-		expectedNamespace string
-		apiNS             *v1.Namespace
+		request *http.Request
+		resp    *httptest.ResponseRecorder
 	)
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
-		fakeK8s = &fakes.FakeKubeClient{}
-		fakeNamespace = &fakes.FakeNamespace{}
-		fakeReplicationController = &fakes.FakeReplicationController{}
-
 		appGuid, err := uuid.NewV4()
 		Expect(err).NotTo(HaveOccurred())
 		appVersion, err := uuid.NewV4()
@@ -48,91 +47,247 @@ var _ = Describe("StopAppHandler", func() {
 		processGuid, err = helpers.NewProcessGuid(pg)
 		Expect(err).NotTo(HaveOccurred())
 
-		expectedNamespace = processGuid.ShortenedGuid()
-		apiNS = &v1.Namespace{
-			ObjectMeta: v1.ObjectMeta{
-				Name: expectedNamespace,
-			},
-			Spec: v1.NamespaceSpec{
-				Finalizers: []v1.FinalizerName{v1.FinalizerName(expectedNamespace)},
-			},
+		replicationControllerList = &v1.ReplicationControllerList{
+			Items: []v1.ReplicationController{{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      processGuid.ShortenedGuid(),
+					Namespace: "space-guid",
+					Labels: map[string]string{
+						"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+					},
+				},
+				Spec: v1.ReplicationControllerSpec{
+					Replicas: helpers.Int32Ptr(999),
+				},
+			}},
 		}
 
-		responseRecorder = httptest.NewRecorder()
+		fakeClient = &fakes.FakeKubeClient{}
+		fakeReplicationController = &fakes.FakeReplicationController{}
+		fakeClient.ReplicationControllersReturns(fakeReplicationController)
+		fakeReplicationController.ListReturns(replicationControllerList, nil)
 
+		fakeReplicationController.UpdateStub = func(rc *v1.ReplicationController) (*v1.ReplicationController, error) {
+			return rc, nil
+		}
+
+		resp = httptest.NewRecorder()
 		request, err = http.NewRequest("DELETE", "", nil)
 		Expect(err).NotTo(HaveOccurred())
+
 		request.Form = url.Values{
 			":process_guid": []string{processGuid.String()},
 		}
 	})
 
 	JustBeforeEach(func() {
-		stopAppHandler := handlers.NewStopAppHandler(logger, fakeK8s)
-		stopAppHandler.StopApp(responseRecorder, request)
+		stopAppHandler := handlers.NewStopAppHandler(logger, fakeClient)
+		stopAppHandler.StopApp(resp, request)
 	})
 
-	Context("when deleting the desired app", func() {
-		Context("when the desired app exists", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(apiNS, nil)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&v1.ReplicationController{}, errors.New("replicationcontrollers found but no pods"))
-			})
+	It("lists replication controllers with the matching process guid", func() {
+		Expect(fakeClient.ReplicationControllersCallCount()).To(BeNumerically(">", 1))
+		Expect(fakeClient.ReplicationControllersArgsForCall(0)).To(Equal(api.NamespaceAll))
 
-			It("invokes the kubernetes to delete the app", func() {
-				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(2))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(0)).To(Equal(expectedNamespace))
-				Expect(fakeK8s.ReplicationControllersArgsForCall(1)).To(Equal(expectedNamespace))
-				Expect(fakeReplicationController.DeleteCallCount()).To(Equal(1))
-				Expect(fakeReplicationController.DeleteArgsForCall(0)).To(Equal(processGuid.ShortenedGuid()))
-			})
+		Expect(fakeReplicationController.ListCallCount()).To(Equal(1))
+		Expect(fakeReplicationController.ListArgsForCall(0)).To(Equal(api.ListOptions{
+			LabelSelector: labels.Set{"cloudfoundry.org/process-guid": processGuid.ShortenedGuid()}.AsSelector(),
+		}))
+	})
 
-			It("responds with 202 Accepted", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusAccepted))
-			})
-		})
+	Context("when a replication controller is present", func() {
+		BeforeEach(func() {
+			Expect(replicationControllerList.Items).To(HaveLen(1))
+			Expect(replicationControllerList.Items[0].Spec.Replicas).NotTo(BeNil())
+			Expect(*replicationControllerList.Items[0].Spec.Replicas).To(BeNumerically(">", 0))
 
-		Context("when the desired app doesn't exist", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeNamespace.GetReturns(apiNS, nil)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(nil, errors.New("replicationcontrollers \"process-guid\" not found"))
-			})
-
-			It("responds with a 404", func() {
+			fakeReplicationController.UpdateStub = func(rc *v1.ReplicationController) (*v1.ReplicationController, error) {
 				Expect(fakeReplicationController.DeleteCallCount()).To(Equal(0))
-				Expect(responseRecorder.Code).To(Equal(http.StatusNotFound))
+				return rc, nil
+			}
+		})
+
+		It("sets the pod replica count to zero before deleting", func() {
+			Expect(fakeReplicationController.UpdateCallCount()).To(Equal(1))
+
+			rc := fakeReplicationController.UpdateArgsForCall(0)
+			Expect(rc.Spec.Replicas).NotTo(BeNil())
+			Expect(*rc.Spec.Replicas).To(BeEquivalentTo(0))
+		})
+
+		It("deletes the replication controller", func() {
+			Expect(fakeReplicationController.DeleteCallCount()).To(Equal(1))
+
+			name, opts := fakeReplicationController.DeleteArgsForCall(0)
+			Expect(name).To(Equal(processGuid.ShortenedGuid()))
+			Expect(opts).To(BeNil())
+		})
+
+		Context("when updating the replication controller fails", func() {
+			Context("because the replication controller is not found", func() {
+				BeforeEach(func() {
+					fakeReplicationController.UpdateReturns(nil, &kubeerrors.StatusError{
+						ErrStatus: unversioned.Status{
+							Message: "replication controller not found",
+							Status:  unversioned.StatusFailure,
+							Reason:  unversioned.StatusReasonNotFound,
+							Code:    http.StatusNotFound,
+						},
+					})
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("update-replication-controller-failed.*replication controller not found"))
+				})
+
+				It("keeps calm and carries on", func() {
+					Expect(resp.Code).To(Equal(http.StatusAccepted))
+				})
+			})
+
+			Context("with an unexpected error", func() {
+				BeforeEach(func() {
+					fakeReplicationController.UpdateReturns(nil, &kubeerrors.StatusError{
+						ErrStatus: unversioned.Status{
+							Message: "potato",
+							Status:  unversioned.StatusFailure,
+							Reason:  unversioned.StatusReasonInternalError,
+							Code:    http.StatusInternalServerError,
+						},
+					})
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("update-replication-controller-failed.*potato"))
+				})
+
+				It("reponds with an internal server error 500", func() {
+					Expect(resp.Code).To(Equal(http.StatusInternalServerError))
+				})
+			})
+
+			Context("with an unknown error type", func() {
+				BeforeEach(func() {
+					fakeReplicationController.UpdateReturns(nil, errors.New("tomato"))
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("update-replication-controller-failed.*tomato"))
+				})
+
+				It("reponds with an internal server error 500", func() {
+					Expect(resp.Code).To(Equal(http.StatusInternalServerError))
+				})
 			})
 		})
 
-		Context("when process-guid is missing in the request", func() {
-			BeforeEach(func() {
-				request.Form.Del(":process_guid")
+		Context("when deleting a replication controller fails", func() {
+			Context("because the replication controller is not found", func() {
+				BeforeEach(func() {
+					fakeReplicationController.DeleteReturns(&kubeerrors.StatusError{
+						ErrStatus: unversioned.Status{
+							Message: "replication controller not found",
+							Status:  unversioned.StatusFailure,
+							Reason:  unversioned.StatusReasonNotFound,
+							Code:    http.StatusNotFound,
+						},
+					})
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("delete-replication-controller-failed.*replication controller not found"))
+				})
+
+				It("keeps calm and carries on", func() {
+					Expect(resp.Code).To(Equal(http.StatusAccepted))
+				})
 			})
 
-			It("does not call the kubernetes", func() {
-				Expect(fakeK8s.ReplicationControllersCallCount()).To(Equal(0))
+			Context("with an unexpected error", func() {
+				BeforeEach(func() {
+					fakeReplicationController.DeleteReturns(&kubeerrors.StatusError{
+						ErrStatus: unversioned.Status{
+							Message: "potato",
+							Status:  unversioned.StatusFailure,
+							Reason:  unversioned.StatusReasonInternalError,
+							Code:    http.StatusInternalServerError,
+						},
+					})
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("delete-replication-controller-failed.*potato"))
+				})
+
+				It("reponds with an internal server error 500", func() {
+					Expect(resp.Code).To(Equal(http.StatusInternalServerError))
+				})
 			})
 
-			It("responds with 400 Bad Request", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusBadRequest))
+			Context("with an unknown error type", func() {
+				BeforeEach(func() {
+					fakeReplicationController.DeleteReturns(errors.New("tomato"))
+				})
+
+				It("logs the error", func() {
+					Eventually(logger).Should(gbytes.Say("delete-replication-controller-failed.*tomato"))
+				})
+
+				It("reponds with an internal server error 500", func() {
+					Expect(resp.Code).To(Equal(http.StatusInternalServerError))
+				})
 			})
 		})
+	})
 
-		Context("when kubernetes failed", func() {
-			BeforeEach(func() {
-				fakeK8s.NamespacesReturns(fakeNamespace)
-				fakeK8s.ReplicationControllersReturns(fakeReplicationController)
-				fakeReplicationController.GetReturns(&v1.ReplicationController{}, errors.New("replicationcontrollers found but no pods"))
-				fakeReplicationController.DeleteReturns(errors.New("oh no"))
-			})
+	Context("when parsing the process guid fails", func() {
+		BeforeEach(func() {
+			request.Form = url.Values{
+				":process_guid": []string{"some-goo-that-is-bad"},
+			}
+		})
 
-			It("responds with a ServiceUnavailabe error", func() {
-				Expect(responseRecorder.Code).To(Equal(http.StatusServiceUnavailable))
-			})
+		It("logs the error", func() {
+			Eventually(logger).Should(gbytes.Say("invalid-process-guid.*some-goo-that-is-bad"))
+		})
+
+		It("does not attempt to list the replication controllers", func() {
+			Expect(fakeClient.ReplicationControllersCallCount()).To(Equal(0))
+		})
+
+		It("responds with a Bad Request 400", func() {
+			Expect(resp.Code).To(Equal(http.StatusBadRequest))
+		})
+	})
+
+	Context("when listing replication controllers fails", func() {
+		BeforeEach(func() {
+			fakeReplicationController.ListReturns(nil, errors.New("woops"))
+		})
+
+		It("reponds with an internal server error 500", func() {
+			Expect(resp.Code).To(Equal(http.StatusInternalServerError))
+		})
+
+		It("logs the error", func() {
+			Eventually(logger).Should(gbytes.Say("replication-controller-list-failed.*woops"))
+		})
+	})
+
+	Context("when no replication controllers are found", func() {
+		BeforeEach(func() {
+			fakeReplicationController.ListReturns(
+				&v1.ReplicationControllerList{Items: []v1.ReplicationController{}},
+				nil,
+			)
+		})
+
+		It("reponds with a not found 404", func() {
+			Expect(resp.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("logs the error", func() {
+			Eventually(logger).Should(gbytes.Say("desired-lrp-not-found.*process-guid.*" + processGuid.String()))
 		})
 	})
 })
