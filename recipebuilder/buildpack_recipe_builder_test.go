@@ -159,6 +159,10 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 				Expect(*replicationController.Spec.Replicas).To(BeEquivalentTo(23))
 				Expect(replicationController.Spec.Selector).To(Equal(map[string]string{"cloudfoundry.org/process-guid": processGuid.ShortenedGuid()}))
 
+				Expect(replicationController.Spec.Template.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/app-guid", processGuid.AppGuid.String()))
+				Expect(replicationController.Spec.Template.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/space-guid", "space-guid"))
+				Expect(replicationController.Spec.Template.ObjectMeta.Labels).To(HaveKeyWithValue("cloudfoundry.org/process-guid", processGuid.ShortenedGuid()))
+
 				Expect(replicationController.Spec.Template.Spec.Volumes).To(ConsistOf(
 					v1.Volume{
 						Name:         "lifecycle",
@@ -225,9 +229,6 @@ var _ = Describe("Buildpack Recipe Builder", func() {
 							{Name: "LIFECYCLE_URL", Value: "http://file-server.com/v1/static/some-lifecycle.tgz"},
 							{Name: "DROPLET_URL", Value: "http://the-droplet.uri.com"},
 						},
-						// SecurityContext: &v1.SecurityContext{
-						// 	RunAsUser: helpers.Int64Ptr(2000),
-						// },
 						Command: []string{
 							"/bin/bash",
 							"-c",
