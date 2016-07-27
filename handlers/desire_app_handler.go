@@ -128,6 +128,10 @@ func (h *DesireAppHandler) createReplicationController(
 	logger = logger.Session("create-replication-controller")
 
 	builder := h.recipeBuilders["buildpack"]
+	if desiredApp.DockerImageUrl != "" {
+		builder = h.recipeBuilders["docker"]
+	}
+
 	replicationController, err := builder.BuildReplicationController(desiredApp)
 	if err != nil {
 		logger.Fatal("failed-to-transform-desired-app-to-rc", err)

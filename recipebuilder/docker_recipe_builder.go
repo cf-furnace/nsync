@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"k8s.io/kubernetes/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/api/v1"
 
 	"github.com/cloudfoundry-incubator/bbs/models"
 	ssh_routes "github.com/cloudfoundry-incubator/diego-ssh/routes"
@@ -96,6 +100,207 @@ func (b *DockerRecipeBuilder) BuildTask(task *cc_messages.TaskRequestFromCC) (*m
 	}
 
 	return taskDefinition, nil
+}
+
+func (b *DockerRecipeBuilder) BuildReplicationController(desiredApp *cc_messages.DesireAppRequestFromCC) (*v1.ReplicationController, error) {
+	buildLogger := b.logger.Session("docker-recipe-build")
+
+	buildLogger.Debug("desiredApp data", lager.Data{"desired-app": desiredApp})
+
+	if desiredApp.DockerImageUrl == "" {
+		buildLogger.Error("desired-app-invalid", ErrDockerImageMissing, lager.Data{"desired-app": desiredApp})
+		return nil, ErrDockerImageMissing
+	}
+
+	if desiredApp.DropletUri != "" && desiredApp.DockerImageUrl != "" {
+		buildLogger.Error("desired-app-invalid", ErrMultipleAppSources, lager.Data{"desired-app": desiredApp})
+		return nil, ErrMultipleAppSources
+	}
+
+	var lifecycle = "docker"
+	_, ok := b.config.Lifecycles[lifecycle]
+	if !ok {
+		buildLogger.Error("unknown-lifecycle", ErrNoLifecycleDefined, lager.Data{
+			"lifecycle": lifecycle,
+		})
+
+		return nil, ErrNoLifecycleDefined
+	}
+
+	numFiles := DefaultFileDescriptorLimit
+	if desiredApp.FileDescriptors != 0 {
+		numFiles = desiredApp.FileDescriptors
+	}
+
+	desiredAppPorts, err := b.ExtractExposedPorts(desiredApp)
+	if err != nil {
+		return nil, err
+	}
+
+	// switch desiredApp.HealthCheckType {
+	// case cc_messages.PortHealthCheckType, cc_messages.UnspecifiedHealthCheckType:
+	// 	monitor = models.Timeout(getParallelAction(desiredAppPorts, "vcap"), 30*time.Second)
+	// }
+
+	desiredAppRoutingInfo, err := helpers.CCRouteInfoToRoutes(desiredApp.RoutingInfo, desiredAppPorts)
+	if err != nil {
+		buildLogger.Error("marshaling-cc-route-info-failed", err)
+		return nil, err
+	}
+
+	// if desiredApp.AllowSSH {
+	// 	hostKeyPair, err := b.config.KeyFactory.NewKeyPair(1024)
+	// 	if err != nil {
+	// 		buildLogger.Error("new-host-key-pair-failed", err)
+	// 		return nil, err
+	// 	}
+
+	// 	userKeyPair, err := b.config.KeyFactory.NewKeyPair(1024)
+	// 	if err != nil {
+	// 		buildLogger.Error("new-user-key-pair-failed", err)
+	// 		return nil, err
+	// 	}
+
+	// 	actions = append(actions, &models.RunAction{
+	// 		User: "vcap",
+	// 		Path: "/tmp/lifecycle/diego-sshd",
+	// 		Args: []string{
+	// 			"-address=" + fmt.Sprintf("0.0.0.0:%d", DefaultSSHPort),
+	// 			"-hostKey=" + hostKeyPair.PEMEncodedPrivateKey(),
+	// 			"-authorizedKey=" + userKeyPair.AuthorizedKey(),
+	// 			"-inheritDaemonEnv",
+	// 			"-logLevel=fatal",
+	// 		},
+	// 		Env: createLrpEnv(desiredApp.Environment, desiredAppPorts),
+	// 		ResourceLimits: &models.ResourceLimits{
+	// 			Nofile: &numFiles,
+	// 		},
+	// 	})
+
+	// 	sshRoutePayload, err := json.Marshal(ssh_routes.SSHRoute{
+	// 		ContainerPort:   2222,
+	// 		PrivateKey:      userKeyPair.PEMEncodedPrivateKey(),
+	// 		HostFingerprint: hostKeyPair.Fingerprint(),
+	// 	})
+
+	// 	if err != nil {
+	// 		buildLogger.Error("marshaling-ssh-route-failed", err)
+	// 		return nil, err
+	// 	}
+
+	// 	sshRouteMessage := json.RawMessage(sshRoutePayload)
+	// 	desiredAppRoutingInfo[ssh_routes.DIEGO_SSH] = &sshRouteMessage
+	// 	desiredAppPorts = append(desiredAppPorts, DefaultSSHPort)
+	// }
+
+	/*initContainers := []v1.Container{{
+		Name:  "setup",
+		Image: rootFSPath,
+		VolumeMounts: []v1.VolumeMount{
+			{Name: "lifecycle", MountPath: "/lifecycle"},
+		},
+		Env: []v1.EnvVar{
+			{Name: "LIFECYCLE_URL", Value: lifecycleURL},
+		},
+		Command: []string{
+			"/bin/bash",
+			"-c",
+			strings.Join([]string{
+				"set -ex",
+				"wget --no-check-certificate -O- $LIFECYCLE_URL | tar -zxv -C /lifecycle",
+			}, "\n"),
+		},
+	}}*/
+
+	processGuid, err := helpers.NewProcessGuid(desiredApp.ProcessGuid)
+	if err != nil {
+		panic(err)
+	}
+
+	spaceGuid, err := GetSpaceGuid(*desiredApp)
+	if err != nil {
+		panic(err)
+	}
+
+	/*encodedInitContainers, err := json.Marshal(initContainers)
+	if err != nil {
+		panic(err)
+	}*/
+
+	encodedRoutes, err := json.Marshal(desiredAppRoutingInfo)
+	if err != nil {
+		panic(err)
+	}
+
+	if desiredApp.EgressRules == nil {
+		desiredApp.EgressRules = []*models.SecurityGroupRule{}
+	}
+	encodedEgressRules, err := json.Marshal(desiredApp.EgressRules)
+	if err != nil {
+		panic(err)
+	}
+
+	containerPorts := []v1.ContainerPort{}
+	for _, p := range desiredAppPorts {
+		containerPorts = append(containerPorts, v1.ContainerPort{Protocol: v1.ProtocolTCP, ContainerPort: int32(p)})
+	}
+
+	imageUrl, err := checkDockerURI(desiredApp.DockerImageUrl)
+	if err != nil {
+		return nil, err
+	}
+
+	return &v1.ReplicationController{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      processGuid.ShortenedGuid(),
+			Namespace: spaceGuid,
+			Labels: map[string]string{
+				"cloudfoundry.org/app-guid":     processGuid.AppGuid.String(),
+				"cloudfoundry.org/space-guid":   spaceGuid,
+				"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+			},
+			Annotations: map[string]string{
+				"cloudfoundry.org/allow-ssh":    strconv.FormatBool(desiredApp.AllowSSH),
+				"cloudfoundry.org/routing-info": string(encodedRoutes),
+				"cloudfoundry.org/egress-rules": string(encodedEgressRules),
+				"cloudfoundry.org/log-source":   getAppLogSource(desiredApp.LogSource),
+				"cloudfoundry.org/log-guid":     desiredApp.LogGuid,
+				"cloudfoundry.org/metrics-guid": desiredApp.LogGuid,
+			},
+		},
+		Spec: v1.ReplicationControllerSpec{
+			Replicas: helpers.Int32Ptr(desiredApp.NumInstances),
+			Selector: map[string]string{
+				"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+			},
+			Template: &v1.PodTemplateSpec{
+				ObjectMeta: v1.ObjectMeta{
+					Labels: map[string]string{
+						"cloudfoundry.org/app-guid":     processGuid.AppGuid.String(),
+						"cloudfoundry.org/space-guid":   spaceGuid,
+						"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{
+						Name:            "application",
+						Image:           imageUrl,
+						ImagePullPolicy: v1.PullIfNotPresent,
+						Resources: v1.ResourceRequirements{
+							Limits: v1.ResourceList{
+								v1.ResourceCPU:                      resource.MustParse("1000m"),
+								v1.ResourceMemory:                   resource.MustParse(fmt.Sprintf("%dMi", desiredApp.MemoryMB)),
+								"cloudfoundry.org/storage-space":    resource.MustParse(fmt.Sprintf("%dMi", desiredApp.DiskMB)),
+								"cloudfoundry.org/file-descriptors": resource.MustParse(fmt.Sprintf("%d", numFiles)),
+							},
+						},
+						Env:   []v1.EnvVar{},
+						Ports: containerPorts,
+					}},
+				},
+			},
+		},
+	}, nil
 }
 
 func (b *DockerRecipeBuilder) Build(desiredApp *cc_messages.DesireAppRequestFromCC) (*models.DesiredLRP, error) {
@@ -288,8 +493,12 @@ func (b DockerRecipeBuilder) ExtractExposedPorts(desiredApp *cc_messages.DesireA
 	executionMetadata := desiredApp.ExecutionMetadata
 	metadata, err := NewDockerExecutionMetadata(executionMetadata)
 	if err != nil {
+		b.logger.Error("parsing-execution-metadata-failed", err, lager.Data{
+			"desired-app-metadata": executionMetadata,
+		})
 		return nil, err
 	}
+
 	return extractExposedPorts(metadata, b.logger)
 }
 
@@ -324,6 +533,14 @@ func extractUser(executionMetadata DockerExecutionMetadata) (string, error) {
 	} else {
 		return "root", nil
 	}
+}
+
+func checkDockerURI(dockerURI string) (string, error) {
+	if strings.Contains(dockerURI, "://") {
+		return "", errors.New("docker URI [" + dockerURI + "] should not contain scheme")
+	}
+
+	return dockerURI, nil
 }
 
 func convertDockerURI(dockerURI string) (string, error) {

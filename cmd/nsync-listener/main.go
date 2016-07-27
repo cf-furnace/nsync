@@ -146,6 +146,7 @@ func main() {
 	}
 	furnaceBuilders := map[string]recipebuilder.FurnaceRecipeBuilder{
 		"buildpack": recipebuilder.NewBuildpackRecipeBuilder(logger, buildpackRecipeBuilderConfig),
+		"docker":    recipebuilder.NewDockerRecipeBuilder(logger, dockerRecipeBuilderConfig),
 	}
 
 	clientSet := initializeK8sClient(logger)
