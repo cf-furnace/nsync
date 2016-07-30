@@ -104,10 +104,28 @@ var bbsMaxIdleConnsPerHost = flag.Int(
 	"Controls the maximum number of idle (keep-alive) connctions per host. If zero, golang's default will be used",
 )
 
-var k8sCluster = flag.String(
-	"k8sCluster",
+var kubeCluster = flag.String(
+	"kubeCluster",
 	"",
-	"K8s API server URL (scheme://ip:port)",
+	"kubernetes API server URL (scheme://ip:port)",
+)
+
+var kubeCACert = flag.String(
+	"kubeCACert",
+	"",
+	"path to kubernetes API server CA certificate",
+)
+
+var kubeClientCert = flag.String(
+	"kubeClientCert",
+	"",
+	"path to client certificate for authentication with the kubernetes API server",
+)
+
+var kubeClientKey = flag.String(
+	"kubeClientKey",
+	"",
+	"path to client key for authentication with the kubernetes API server",
 )
 
 const (
@@ -227,11 +245,16 @@ func initializeBBSClient(logger lager.Logger) bbs.Client {
 
 func initializeK8sClient(logger lager.Logger) clientset.Interface {
 	k8sClient, err := clientset.NewForConfig(&restclient.Config{
-		Host: *k8sCluster,
+		Host: *kubeCluster,
+		TLSClientConfig: restclient.TLSClientConfig{
+			CertFile: *kubeClientCert,
+			KeyFile:  *kubeClientKey,
+			CAFile:   *kubeCACert,
+		},
 	})
 
 	if err != nil {
-		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *k8sCluster})
+		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *kubeCluster})
 	}
 
 	return k8sClient
