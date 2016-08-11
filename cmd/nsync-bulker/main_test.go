@@ -3,25 +3,33 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/client/restclient"
+	"k8s.io/kubernetes/pkg/labels"
+
+	"github.com/nu7hatch/gouuid"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/ghttp"
-	"github.com/pivotal-golang/clock"
 	"github.com/pivotal-golang/lager"
 	"github.com/pivotal-golang/lager/lagertest"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/ginkgomon"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/locket"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
+
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
+	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 )
 
 var _ = Describe("Syncing desired state with CC", func() {
@@ -34,11 +42,22 @@ var _ = Describe("Syncing desired state with CC", func() {
 
 		domainTTL time.Duration
 
-		bulkerLockName    = "nsync_bulker_lock"
-		pollingInterval   time.Duration
-		heartbeatInterval time.Duration
+		//bulkerLockName    = "nsync_bulker_lock"
+		pollingInterval time.Duration
+		//heartbeatInterval time.Duration
 
-		logger lager.Logger
+		logger            lager.Logger
+		excessPG          string
+		newPG             string
+		excessProcessGuid helpers.ProcessGuid
+		newProcessGuid    helpers.ProcessGuid
+
+		k8sClient v1core.CoreInterface
+
+		home      = os.Getenv("HOME")
+		config, _ = clientcmd.LoadFromFile(filepath.Join(home, ".kube", "config"))
+
+		context = config.Contexts[config.CurrentContext]
 	)
 
 	startBulker := func(check bool) ifrit.Process {
@@ -57,7 +76,10 @@ var _ = Describe("Syncing desired state with CC", func() {
 				"-fileServerURL", "http://file-server.com",
 				"-lockRetryInterval", "1s",
 				"-consulCluster", consulRunner.ConsulCluster(),
-				"-bbsAddress", fakeBBS.URL(),
+				"-kubeCluster", config.Clusters[context.Cluster].Server,
+				"-kubeClientCert", config.AuthInfos[context.AuthInfo].ClientCertificate,
+				"-kubeClientKey", config.AuthInfos[context.AuthInfo].ClientKey,
+				"-kubeCACert", config.Clusters[context.Cluster].CertificateAuthority,
 				"-privilegedContainers", "false",
 			),
 		})
@@ -72,80 +94,49 @@ var _ = Describe("Syncing desired state with CC", func() {
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
+		config := loadClientConfig()
+		k8sConfig, err := clientset.NewForConfig(config)
+
+		if err != nil {
+			logger.Fatal("Can't create Kubernetes Client", err)
+		}
+
+		k8sClient = k8sConfig.Core()
+
 		fakeCC = ghttp.NewServer()
 
 		pollingInterval = 500 * time.Millisecond
 		domainTTL = 1 * time.Second
-		heartbeatInterval = 30 * time.Second
+		//heartbeatInterval = 30 * time.Second
+
+		newPG = generateProcessGuid()
+		excessPG = generateProcessGuid()
+
+		newProcessGuid, err = helpers.NewProcessGuid(newPG)
+		Expect(err).NotTo(HaveOccurred())
+		excessProcessGuid, err = helpers.NewProcessGuid(excessPG)
+		Expect(err).NotTo(HaveOccurred())
 
 		desiredAppResponses := map[string]string{
-			"process-guid-1": `{
-					"disk_mb": 1024,
-					"environment": [
-						{ "name": "env-key-1", "value": "env-value-1" },
-						{ "name": "env-key-2", "value": "env-value-2" }
-					],
-					"file_descriptors": 16,
-					"num_instances": 42,
-					"log_guid": "log-guid-1",
-					"memory_mb": 256,
-					"process_guid": "process-guid-1",
-					"routing_info": {
-						"http_routes":
-							[
-								{"hostname": "route-1"},
-								{"hostname": "route-2"},
-								{"hostname": "new-route"}
-							]
-					},
-					"droplet_uri": "source-url-1",
-					"stack": "some-stack",
-					"start_command": "start-command-1",
-					"execution_metadata": "execution-metadata-1",
-					"health_check_timeout_in_seconds": 123456,
-					"etag": "1.1"
-				}`,
-			"process-guid-2": `{
-					"disk_mb": 1024,
-					"environment": [
-						{ "name": "env-key-1", "value": "env-value-1" },
-						{ "name": "env-key-2", "value": "env-value-2" }
-					],
-					"file_descriptors": 16,
-					"num_instances": 4,
-					"log_guid": "log-guid-1",
-					"memory_mb": 256,
-					"process_guid": "process-guid-2",
-					"routing_info": {
-						"http_routes": [
-								{ "hostname": "route-3", "route_service_url":"https://rs.example.com"}
-							],
-						"tcp_routes": [
-							  {"router_group_guid": "guid-1", "external_port":5222, "container_port":60000}
-					 	  ]
-						},
-					"droplet_uri": "source-url-1",
-					"stack": "some-stack",
-					"start_command": "start-command-1",
-					"execution_metadata": "execution-metadata-1",
-					"health_check_timeout_in_seconds": 123456,
-					"etag": "2.1"
-				}`,
-			"process-guid-3": `{
+			newPG: `{
 					"disk_mb": 512,
-					"environment": [],
 					"file_descriptors": 8,
 					"num_instances": 4,
 					"log_guid": "log-guid-3",
 					"memory_mb": 128,
-					"process_guid": "process-guid-3",
+					"process_guid": "` + newPG + `",
 					"routing_info": { "http_routes": [] },
 					"droplet_uri": "source-url-3",
 					"stack": "some-stack",
 					"start_command": "start-command-3",
 					"execution_metadata": "execution-metadata-3",
 					"health_check_timeout_in_seconds": 123456,
-					"etag": "3.1"
+					"etag": "3.1",
+					"environment": [
+					{
+						"name": "VCAP_APPLICATION",
+						"value": "{\"space_id\": \"default\"}"
+					}]
 				}`,
 		}
 
@@ -154,16 +145,8 @@ var _ = Describe("Syncing desired state with CC", func() {
 					"token": {},
 					"fingerprints": [
 							{
-								"process_guid": "process-guid-1",
+								"process_guid": "`+newPG+`",
 								"etag": "1.1"
-							},
-							{
-								"process_guid": "process-guid-2",
-								"etag": "2.1"
-							},
-							{
-								"process_guid": "process-guid-3",
-								"etag": "3.1"
 							}
 					]
 				}`),
@@ -205,460 +188,117 @@ var _ = Describe("Syncing desired state with CC", func() {
 		Context("once the state has been synced with CC", func() {
 			Context("lrps", func() {
 				BeforeEach(func() {
-					schedulingInfoResponse := models.DesiredLRPSchedulingInfosResponse{
-						Error: nil,
-						DesiredLrpSchedulingInfos: []*models.DesiredLRPSchedulingInfo{
-							{
-								DesiredLRPKey: models.DesiredLRPKey{ // perfect. love it. keep it.
-									ProcessGuid: "process-guid-1",
-									Domain:      cc_messages.AppLRPDomain,
-								},
-								Annotation: "1.1",
+					excessRC := &v1.ReplicationController{
+						ObjectMeta: v1.ObjectMeta{
+							Name:      excessProcessGuid.ShortenedGuid(),
+							Namespace: "default",
+							Labels: map[string]string{
+								"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid(),
+								"cloudfoundry.org/domain":       cc_messages.AppLRPDomain,
 							},
-							{
-								DesiredLRPKey: models.DesiredLRPKey{ // annotation mismatch so update
-									ProcessGuid: "process-guid-2",
-									Domain:      cc_messages.AppLRPDomain,
-								},
-							}, // missing 3 so create it
-							{
-								DesiredLRPKey: models.DesiredLRPKey{ // extra to be removed
-									ProcessGuid: "process-guid-4",
-									Domain:      cc_messages.AppLRPDomain,
-								},
-								Annotation: "4.1",
+							Annotations: map[string]string{
+								"cloudfoundry.org/log-guid":      "the-log-guid",
+								"cloudfoundry.org/metrics-guid":  "the-metrics-guid",
+								"cloudfoundry.org/storage-space": "storage-space",
+								"cloudfoundry.org/etag":          "current-etag",
 							},
 						},
-					}
-					data, err := schedulingInfoResponse.Marshal()
-					Expect(err).ToNot(HaveOccurred())
-
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-						ghttp.RespondWith(200, data, http.Header{bbs.ContentTypeHeader: []string{bbs.ProtoContentType}}),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-						ghttp.RespondWith(200, `{}`),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-						ghttp.CombineHandlers(
-							ghttp.VerifyContentType("application/x-protobuf"),
-							func(w http.ResponseWriter, req *http.Request) {
-								body, err := ioutil.ReadAll(req.Body)
-								Expect(err).ShouldNot(HaveOccurred())
-								defer req.Body.Close()
-
-								protoMessage := &models.DesireLRPRequest{}
-
-								err = proto.Unmarshal(body, protoMessage)
-								Expect(err).ToNot(HaveOccurred(), "Failed to unmarshal protobuf")
-
-								Expect(protoMessage.DesiredLrp.ProcessGuid).To(Equal("process-guid-3"))
+						Spec: v1.ReplicationControllerSpec{
+							Replicas: helpers.Int32Ptr(999),
+							Selector: map[string]string{
+								"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid(),
 							},
-						),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/update",
-						ghttp.CombineHandlers(
-							ghttp.VerifyContentType("application/x-protobuf"),
-							func(w http.ResponseWriter, req *http.Request) {
-								body, err := ioutil.ReadAll(req.Body)
-								Expect(err).ShouldNot(HaveOccurred())
-								defer req.Body.Close()
-
-								protoMessage := &models.UpdateDesiredLRPRequest{}
-
-								err = proto.Unmarshal(body, protoMessage)
-								Expect(err).ToNot(HaveOccurred(), "Failed to unmarshal protobuf")
-
-								Expect(*protoMessage.Update.Annotation).To(Equal("2.1"))
-								Expect(protoMessage.ProcessGuid).To(Equal("process-guid-2"))
-							},
-						),
-					)
-
-					expectedLRPDeleteRequest := &models.RemoveDesiredLRPRequest{ProcessGuid: "process-guid-4"}
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/remove",
-						ghttp.VerifyProtoRepresenting(expectedLRPDeleteRequest),
-					)
-
-					fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-						ghttp.RespondWith(200, `{"token": {},"task_states": []}`),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-						ghttp.RespondWith(200, `{"error": {},"tasks": []}`),
-					)
-				})
-
-				It("it (adds), (updates), and (removes extra) LRPs", func() {
-					Eventually(func() bool {
-						for _, r := range fakeBBS.ReceivedRequests() {
-							if r.URL.Path == "/v1/desired_lrp/desire.r1" {
-								return true
-							}
-						}
-						return false
-					}).Should(BeTrue())
-
-					Eventually(func() bool {
-						for _, r := range fakeBBS.ReceivedRequests() {
-							if r.URL.Path == "/v1/desired_lrp/update" {
-								return true
-							}
-						}
-						return false
-					}).Should(BeTrue())
-
-					Eventually(func() bool {
-						for _, r := range fakeBBS.ReceivedRequests() {
-							if r.URL.Path == "/v1/desired_lrp/remove" {
-								return true
-							}
-						}
-						return false
-					}).Should(BeTrue())
-				})
-			})
-
-			Context("tasks", func() {
-				Context("CC has a task, but the bbs does not", func() {
-					BeforeEach(func() {
-						fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-							ghttp.RespondWith(200, `{
-							"token": {},
-							"task_states": [
-								{
-									"task_guid": "task-guid-1",
-									"state": "RUNNING",
-									"completion_callback": "`+fmt.Sprintf("%s/internal/v3/tasks/task-guid-1/completed", fakeCC.URL())+`"
-								}
-							]
-						}`),
-						)
-
-						fakeCC.RouteToHandler("POST", "/internal/v3/tasks/task-guid-1/completed",
-							ghttp.CombineHandlers(
-								ghttp.VerifyJSON(`{
-								"task_guid": "task-guid-1",
-								"failed": true,
-								"failure_reason": "Unable to determine completion status"
-							}`),
-								ghttp.RespondWith(200, `{}`),
-							),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-							ghttp.RespondWith(200, `{"error": {},"tasks": []}`),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-							ghttp.RespondWith(200, `{"error":{},"desired_lrp_scheduling_infos":	[]}`),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-							ghttp.RespondWith(200, `{}`),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-							ghttp.RespondWith(200, `{}`),
-						)
-					})
-
-					It("completes the tasks and sets the state to failed", func() {
-						var request *http.Request
-						Eventually(func() *http.Request {
-							for _, r := range fakeCC.ReceivedRequests() {
-								if r.URL.Path == "/internal/v3/tasks/task-guid-1/completed" {
-									request = r
-									return r
-								}
-							}
-							return nil
-						}, 2*domainTTL).ShouldNot(BeNil())
-					})
-				})
-
-				Context("The BBS has a task, but the CC does not", func() {
-					BeforeEach(func() {
-						fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-							ghttp.RespondWith(200, `{ "token": {}, "task_states": [] }`),
-						)
-
-						taskResponse := models.TasksResponse{
-							Tasks: []*models.Task{
-								{
-									TaskGuid: "task-guid-1",
-									State:    models.Task_Completed,
-									Domain:   cc_messages.RunningTaskDomain,
-									TaskDefinition: &models.TaskDefinition{
-										CompletionCallbackUrl: "/internal/v3/tasks/task-guid-1/completed",
+							Template: &v1.PodTemplateSpec{
+								ObjectMeta: v1.ObjectMeta{
+									Labels: map[string]string{
+										"cloudfoundry.org/app-guid":     excessProcessGuid.AppGuid.String(),
+										"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid(),
+										"cloudfoundry.org/domain":       cc_messages.AppLRPDomain,
 									},
 								},
-							},
-						}
-						data, err := taskResponse.Marshal()
-						Expect(err).ToNot(HaveOccurred())
-
-						fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-							ghttp.RespondWith(200, data, http.Header{bbs.ContentTypeHeader: []string{bbs.ProtoContentType}}),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-							ghttp.RespondWith(200, `{"error":{},"desired_lrp_scheduling_infos":	[]}`),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-							ghttp.RespondWith(200, `{}`),
-						)
-
-						fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-							ghttp.RespondWith(200, `{}`),
-						)
-					})
-
-					It("cancels the tasks in the BBS", func() {
-						Eventually(func() bool {
-							for _, r := range fakeBBS.ReceivedRequests() {
-								if r.URL.Path == "/v1/tasks/cancel" {
-									return true
-								}
-							}
-							return false
-						}, 20*domainTTL).ShouldNot(BeNil())
-					})
-				})
-			})
-
-			Describe("domains", func() {
-				var (
-					foundTaskDomain chan bool
-				)
-
-				BeforeEach(func() {
-					foundTaskDomain = make(chan bool, 2)
-
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-						ghttp.RespondWith(200, `{"error":{},"desired_lrp_scheduling_infos":	[]}`),
-					)
-
-					taskResponse := models.TasksResponse{
-						Tasks: []*models.Task{
-							{
-								TaskGuid: "task-guid-1",
-								State:    models.Task_Completed,
-								Domain:   cc_messages.RunningTaskDomain,
-								TaskDefinition: &models.TaskDefinition{
-									CompletionCallbackUrl: "/internal/v3/tasks/task-guid-1/completed",
+								Spec: v1.PodSpec{
+									Containers: []v1.Container{{
+										Name:  "container-name",
+										Image: "busybox",
+										Resources: v1.ResourceRequirements{
+											Limits: v1.ResourceList{
+												v1.ResourceCPU:                   resource.MustParse("1000m"),
+												v1.ResourceMemory:                resource.MustParse(fmt.Sprintf("%dMi", 256)),
+												"cloudfoundry.org/storage-space": resource.MustParse(fmt.Sprintf("%dMi", 1024)),
+											},
+										},
+									}},
 								},
 							},
 						},
 					}
-					data, err := taskResponse.Marshal()
-					Expect(err).ToNot(HaveOccurred())
 
-					fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-						ghttp.RespondWith(200, data, http.Header{bbs.ContentTypeHeader: []string{bbs.ProtoContentType}}),
-					)
+					logger.Debug("creating the excess replication controller in kube", lager.Data{"excess": excessRC})
 
-					fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-						ghttp.RespondWith(200, `{
-							"token": {},
-							"task_states": [
-								{
-									"task_guid": "task-guid-1",
-									"state": "RUNNING",
-									"completion_callback": "`+fmt.Sprintf("%s/internal/v3/tasks/task-guid-1/completed", fakeCC.URL())+`"
-								}
-							]
-						}`),
-					)
+					rc, err := k8sClient.ReplicationControllers(excessRC.ObjectMeta.Namespace).Create(excessRC)
+					Expect(err).NotTo(HaveOccurred())
+					logger.Debug("created the excess replication controller in kube", lager.Data{"excess": rc})
 
-					fakeCC.RouteToHandler("POST", "/internal/v3/tasks/task-guid-1/completed",
-						ghttp.CombineHandlers(
-							ghttp.VerifyJSON(`{
-								"task_guid": "task-guid-1",
-								"failed": true,
-								"failure_reason": "Unable to determine completion status"
-							}`),
-							ghttp.RespondWith(200, `{}`),
-						),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-						ghttp.RespondWith(200, `{}`),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-						ghttp.RespondWith(200, `{"error": {},"tasks": []}`),
-					)
-
-					fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-						ghttp.CombineHandlers(
-							ghttp.VerifyContentType("application/x-protobuf"),
-							func(w http.ResponseWriter, req *http.Request) {
-								body, err := ioutil.ReadAll(req.Body)
-								Expect(err).ShouldNot(HaveOccurred())
-								defer req.Body.Close()
-
-								protoMessage := &models.UpsertDomainRequest{}
-
-								err = proto.Unmarshal(body, protoMessage)
-								Expect(err).ToNot(HaveOccurred(), "Failed to unmarshal protobuf")
-
-								if protoMessage.Domain == cc_messages.RunningTaskDomain {
-									close(foundTaskDomain)
-								}
-							},
-						),
-					)
 				})
 
-				It("updates the domains", func() {
-					Eventually(foundTaskDomain, 2*domainTTL).Should(BeClosed())
+				FIt("it (adds), and (removes extra) LRPs", func() {
+					Eventually(func() bool {
+						rcList, _ := k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
+							LabelSelector: labels.Set{"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid()}.AsSelector(),
+						})
+
+						logger.Debug("rc List for excesss", lager.Data{"rclist": rcList})
+						if len(rcList.Items) == 0 {
+							return true // the excess rc is gone
+						}
+						return false
+					}).Should(BeTrue())
+
+					Eventually(func() bool {
+						rcList, _ := k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
+							LabelSelector: labels.Set{"cloudfoundry.org/process-guid": newProcessGuid.ShortenedGuid()}.AsSelector(),
+						})
+
+						logger.Debug("rc List for new", lager.Data{"rclist": rcList})
+						if len(rcList.Items) == 1 {
+							return true // the new rc is created
+						}
+						return false
+					}).Should(BeTrue())
+
 				})
 			})
+
 		})
 	})
 
-	Context("when the bulker loses the lock", func() {
-		BeforeEach(func() {
-			heartbeatInterval = 1 * time.Second
-
-			fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-				ghttp.RespondWith(200, `{"token": {},"task_states": []}`),
-			)
-
-			fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-				ghttp.RespondWith(200, `{"error": {},"tasks": []}`),
-			)
-
-			fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-				ghttp.RespondWith(200, `{"error":{},"desired_lrp_scheduling_infos":	[]}`),
-			)
-
-			fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-				ghttp.RespondWith(200, `{}`),
-			)
-
-			fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-				ghttp.RespondWith(200, `{}`),
-			)
-		})
-
-		JustBeforeEach(func() {
-			process = startBulker(true)
-
-			_, err := consulRunner.NewClient().KV().DeleteTree(locket.LockSchemaPath(bulkerLockName), nil)
-			Expect(err).ToNot(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			ginkgomon.Interrupt(process, interruptTimeout)
-		})
-
-		It("exits with an error", func() {
-			Eventually(process.Wait(), 5*domainTTL).Should(Receive(HaveOccurred()))
-		})
-	})
-
-	Context("when the bulker initially does not have the lock", func() {
-		var nsyncLockClaimerProcess ifrit.Process
-
-		BeforeEach(func() {
-			heartbeatInterval = 1 * time.Second
-
-			nsyncLockClaimer := locket.NewLock(logger, consulRunner.NewClient(), locket.LockSchemaPath(bulkerLockName), []byte("something-else"), clock.NewClock(), locket.RetryInterval, locket.LockTTL)
-			nsyncLockClaimerProcess = ifrit.Invoke(nsyncLockClaimer)
-		})
-
-		JustBeforeEach(func() {
-			process = startBulker(false)
-		})
-
-		AfterEach(func() {
-			ginkgomon.Interrupt(process, interruptTimeout)
-			ginkgomon.Kill(nsyncLockClaimerProcess)
-		})
-
-		It("does not make any requests", func() {
-			Consistently(func() int {
-				return len(fakeBBS.ReceivedRequests())
-			}).Should(Equal(0))
-		})
-
-		Context("when the lock becomes available", func() {
-			var (
-				expectedLRPDomainRequest  *models.UpsertDomainRequest
-				expectedTaskDomainRequest *models.UpsertDomainRequest
-
-				foundLRPDomain  chan bool
-				foundTaskDomain chan bool
-			)
-
-			BeforeEach(func() {
-				foundLRPDomain = make(chan bool, 2)
-				foundTaskDomain = make(chan bool, 2)
-
-				expectedLRPDomainRequest = &models.UpsertDomainRequest{
-					Domain: "cf-app",
-					Ttl:    uint32(domainTTL.Seconds()),
-				}
-
-				expectedTaskDomainRequest = &models.UpsertDomainRequest{
-					Domain: "cf-tasks",
-					Ttl:    uint32(domainTTL.Seconds()),
-				}
-
-				fakeCC.RouteToHandler("GET", "/internal/v3/bulk/task_states",
-					ghttp.RespondWith(200, `{"token": {},"task_states": []}`),
-				)
-
-				fakeBBS.RouteToHandler("POST", "/v1/tasks/list.r2",
-					ghttp.RespondWith(200, `{"error": {},"tasks": []}`),
-				)
-
-				fakeBBS.RouteToHandler("POST", "/v1/desired_lrp_scheduling_infos/list",
-					ghttp.RespondWith(200, `{"error":{},"desired_lrp_scheduling_infos":	[]}`),
-				)
-
-				fakeBBS.RouteToHandler("POST", "/v1/desired_lrp/desire.r1",
-					ghttp.RespondWith(200, `{}`),
-				)
-
-				fakeBBS.RouteToHandler("POST", "/v1/domains/upsert",
-					ghttp.CombineHandlers(
-						ghttp.VerifyContentType("application/x-protobuf"),
-						func(w http.ResponseWriter, req *http.Request) {
-							body, err := ioutil.ReadAll(req.Body)
-							Expect(err).ShouldNot(HaveOccurred())
-							defer req.Body.Close()
-
-							protoMessage := &models.UpsertDomainRequest{}
-
-							err = proto.Unmarshal(body, protoMessage)
-							Expect(err).ToNot(HaveOccurred(), "Failed to unmarshal protobuf")
-
-							if protoMessage.Domain == cc_messages.AppLRPDomain {
-								close(foundLRPDomain)
-							}
-
-							if protoMessage.Domain == cc_messages.RunningTaskDomain {
-								close(foundTaskDomain)
-							}
-						},
-					),
-				)
-
-				ginkgomon.Kill(nsyncLockClaimerProcess)
-				time.Sleep(pollingInterval + 10*time.Millisecond)
-			})
-
-			It("is updated", func() {
-				Eventually(foundLRPDomain, 2*domainTTL).Should(BeClosed())
-				Eventually(foundTaskDomain, 2*domainTTL).Should(BeClosed())
-			})
-		})
-	})
 })
+
+func generateProcessGuid() string {
+	appGuid, _ := uuid.NewV4()
+
+	appVersion, _ := uuid.NewV4()
+
+	return appGuid.String() + "-" + appVersion.String()
+}
+
+func loadClientConfig() *restclient.Config {
+	home := os.Getenv("HOME")
+	config, err := clientcmd.LoadFromFile(filepath.Join(home, ".kube", "config"))
+	Expect(err).NotTo(HaveOccurred())
+
+	context := config.Contexts[config.CurrentContext]
+
+	clientConfig := &restclient.Config{
+		Host:     config.Clusters[context.Cluster].Server,
+		Username: config.AuthInfos[context.AuthInfo].Username,
+		Password: config.AuthInfos[context.AuthInfo].Password,
+		Insecure: config.Clusters[context.Cluster].InsecureSkipTLSVerify,
+		TLSClientConfig: restclient.TLSClientConfig{
+			CertFile: config.AuthInfos[context.AuthInfo].ClientCertificate,
+			KeyFile:  config.AuthInfos[context.AuthInfo].ClientKey,
+			CAFile:   config.Clusters[context.Cluster].CertificateAuthority,
+		},
+	}
+	return clientConfig
+}

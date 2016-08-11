@@ -279,6 +279,7 @@ func (b *BuildpackRecipeBuilder) BuildReplicationController(desiredApp *cc_messa
 				"cloudfoundry.org/app-guid":     processGuid.AppGuid.String(),
 				"cloudfoundry.org/space-guid":   spaceGuid,
 				"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+				"cloudfoundry.org/domain":       cc_messages.AppLRPDomain,
 			},
 			Annotations: map[string]string{
 				"cloudfoundry.org/allow-ssh":    strconv.FormatBool(desiredApp.AllowSSH),
@@ -287,6 +288,8 @@ func (b *BuildpackRecipeBuilder) BuildReplicationController(desiredApp *cc_messa
 				"cloudfoundry.org/log-source":   getAppLogSource(desiredApp.LogSource),
 				"cloudfoundry.org/log-guid":     desiredApp.LogGuid,
 				"cloudfoundry.org/metrics-guid": desiredApp.LogGuid,
+				"cloudfoundry.org/etag":         desiredApp.ETag,
+				"cloudfoundry.org/domain":       cc_messages.AppLRPDomain,
 			},
 		},
 		Spec: v1.ReplicationControllerSpec{
@@ -300,6 +303,7 @@ func (b *BuildpackRecipeBuilder) BuildReplicationController(desiredApp *cc_messa
 						"cloudfoundry.org/app-guid":     processGuid.AppGuid.String(),
 						"cloudfoundry.org/space-guid":   spaceGuid,
 						"cloudfoundry.org/process-guid": processGuid.ShortenedGuid(),
+						"cloudfoundry.org/domain":       cc_messages.AppLRPDomain,
 					},
 					Annotations: map[string]string{
 						v1.PodInitContainersAnnotationKey: string(encodedInitContainers),

@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/nsync/bulk"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -21,7 +22,11 @@ var _ = Describe("Fetcher", func() {
 		logger     *lagertest.TestLogger
 		httpClient *http.Client
 
-		cancel chan struct{}
+		cancel       chan struct{}
+		processGuid1 helpers.ProcessGuid
+		processGuid2 helpers.ProcessGuid
+		processGuid3 helpers.ProcessGuid
+		err          error
 	)
 
 	BeforeEach(func() {
@@ -37,6 +42,15 @@ var _ = Describe("Fetcher", func() {
 			Username:  "the-username",
 			Password:  "the-password",
 		}
+
+		processGuid1, err = helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
+
+		processGuid2, err = helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
+
+		processGuid3, err = helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Describe("Fetching Desired App Fingerprints", func() {
@@ -62,11 +76,11 @@ var _ = Describe("Fetcher", func() {
 						"token": {"id":"the-token-id"},
 						"fingerprints": [
 							{
-								"process_guid": "process-guid-1",
+							  "process_guid": "`+processGuid1.String()+`",
 								"etag": "1234567.890"
 							},
 							{
-								"process_guid": "process-guid-2",
+							  "process_guid": "`+processGuid2.String()+`",
 								"etag": "2345678.901"
 							}
 						]
@@ -79,7 +93,7 @@ var _ = Describe("Fetcher", func() {
 							"token": {"id":"another-token-id"},
 							"fingerprints": [
 								{
-									"process_guid": "process-guid-3",
+									"process_guid": "`+processGuid3.String()+`",
 									"etag": "3456789.012"
 								}
 							]
@@ -91,18 +105,18 @@ var _ = Describe("Fetcher", func() {
 			It("retrieves fingerprints of all apps desired by CC", func() {
 				Eventually(resultsChan).Should(Receive(ConsistOf(
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-1",
+						ProcessGuid: processGuid1.String(),
 						ETag:        "1234567.890",
 					},
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-2",
+						ProcessGuid: processGuid2.String(),
 						ETag:        "2345678.901",
 					},
 				)))
 
 				Eventually(resultsChan).Should(Receive(ConsistOf(
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-3",
+						ProcessGuid: processGuid3.String(),
 						ETag:        "3456789.012",
 					})))
 
@@ -120,11 +134,11 @@ var _ = Describe("Fetcher", func() {
 						ghttp.RespondWith(200, `{
 							"fingerprints": [
 								{
-									"process_guid": "process-guid-1",
+									"process_guid": "`+processGuid1.String()+`",
 									"etag": "1234567.890"
 								},
 								{
-									"process_guid": "process-guid-2",
+									"process_guid": "`+processGuid2.String()+`",
 									"etag": "2345678.901"
 								}
 							]
@@ -141,11 +155,11 @@ var _ = Describe("Fetcher", func() {
 			It("rerturns the fingerprints that were retrieved", func() {
 				Eventually(resultsChan).Should(Receive(ConsistOf(
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-1",
+						ProcessGuid: processGuid1.String(),
 						ETag:        "1234567.890",
 					},
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-2",
+						ProcessGuid: processGuid2.String(),
 						ETag:        "2345678.901",
 					},
 				)))
@@ -163,11 +177,11 @@ var _ = Describe("Fetcher", func() {
 						"token": {"id":"another-token-id"},
 						"fingerprints": [
 							{
-								"process_guid": "process-guid-1",
+								"process_guid": ` + processGuid1.String() + `,
 								"etag": "1234567.890"
 							},
 							{
-								"process_guid": "process-guid-2",
+								"process_guid": ` + processGuid2.String() + `,
 								"etag": "2345678.901"
 							}
 						]
@@ -211,7 +225,7 @@ var _ = Describe("Fetcher", func() {
 							"token": {"id":"another-token-id"},
 							"fingerprints": [
 								{
-									"process_guid": "process-guid-3",
+									"process_guid": `+processGuid3.String()+`,
 									"etag": "3456789.012"
 								}
 							]
@@ -266,7 +280,7 @@ var _ = Describe("Fetcher", func() {
 
 				desireRequests = []cc_messages.DesireAppRequestFromCC{
 					{
-						ProcessGuid:  "process-guid-1",
+						ProcessGuid:  processGuid1.String(),
 						DropletUri:   "source-url-1",
 						Stack:        "stack-1",
 						StartCommand: "start-command-1",
@@ -283,7 +297,7 @@ var _ = Describe("Fetcher", func() {
 						ETag:            "1234567.1890",
 					},
 					{
-						ProcessGuid:  "process-guid-2",
+						ProcessGuid:  processGuid2.String(),
 						DropletUri:   "source-url-2",
 						Stack:        "stack-2",
 						StartCommand: "start-command-2",
@@ -300,7 +314,7 @@ var _ = Describe("Fetcher", func() {
 						ETag:            "2345678.2901",
 					},
 					{
-						ProcessGuid:     "process-guid-3",
+						ProcessGuid:     processGuid3.String(),
 						DropletUri:      "source-url-3",
 						Stack:           "stack-3",
 						StartCommand:    "start-command-3",
@@ -320,8 +334,8 @@ var _ = Describe("Fetcher", func() {
 						ghttp.VerifyRequest("POST", "/internal/bulk/apps"),
 						ghttp.VerifyBasicAuth("the-username", "the-password"),
 						ghttp.VerifyJSON(`[
-							"process-guid-1",
-							"process-guid-2"
+							"`+processGuid1.String()+`",
+							"`+processGuid2.String()+`"
 						]
 						`),
 						ghttp.RespondWithJSONEncoded(200, desireRequests[:2]),
@@ -330,7 +344,7 @@ var _ = Describe("Fetcher", func() {
 						ghttp.VerifyRequest("POST", "/internal/bulk/apps"),
 						ghttp.VerifyBasicAuth("the-username", "the-password"),
 						ghttp.VerifyJSON(`[
-							"process-guid-3"
+							"`+processGuid3.String()+`"
 						]
 						`),
 						ghttp.RespondWithJSONEncoded(200, desireRequests[2:]),
@@ -343,11 +357,11 @@ var _ = Describe("Fetcher", func() {
 			It("gets desire app request messages for each fingerprints batch", func() {
 				fingerprints := []cc_messages.CCDesiredAppFingerprint{
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-1",
+						ProcessGuid: processGuid1.String(),
 						ETag:        "1234567.890",
 					},
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-2",
+						ProcessGuid: processGuid2.String(),
 						ETag:        "2345678.901",
 					},
 				}
@@ -356,7 +370,7 @@ var _ = Describe("Fetcher", func() {
 
 				fingerprints = []cc_messages.CCDesiredAppFingerprint{
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "process-guid-3",
+						ProcessGuid: processGuid3.String(),
 						ETag:        "3456789.012",
 					},
 				}
@@ -397,7 +411,7 @@ var _ = Describe("Fetcher", func() {
 
 				httpClient = &http.Client{Timeout: ccResponseTime / 2}
 				fingerprintsChan <- []cc_messages.CCDesiredAppFingerprint{
-					{ProcessGuid: "process-guid", ETag: "123"},
+					{ProcessGuid: processGuid1.String(), ETag: "123"},
 				}
 			})
 
@@ -415,7 +429,7 @@ var _ = Describe("Fetcher", func() {
 				fakeCC.AppendHandlers(ghttp.RespondWith(403, ""))
 
 				fingerprintsChan <- []cc_messages.CCDesiredAppFingerprint{
-					{ProcessGuid: "process-guid", ETag: "123"},
+					{ProcessGuid: processGuid1.String(), ETag: "123"},
 				}
 			})
 
@@ -433,7 +447,7 @@ var _ = Describe("Fetcher", func() {
 				fakeCC.AppendHandlers(ghttp.RespondWith(200, "{"))
 
 				fingerprintsChan <- []cc_messages.CCDesiredAppFingerprint{
-					{ProcessGuid: "process-guid", ETag: "123"},
+					{ProcessGuid: processGuid1.String(), ETag: "123"},
 				}
 			})
 
@@ -468,204 +482,13 @@ var _ = Describe("Fetcher", func() {
 			Context("when waiting to send results", func() {
 				BeforeEach(func() {
 					fingerprintsChan <- []cc_messages.CCDesiredAppFingerprint{
-						{ProcessGuid: "process-guid", ETag: "an-etag"},
+						{ProcessGuid: processGuid1.String(), ETag: "an-etag"},
 					}
 				})
 
 				It("exits when cancelled", func() {
 					close(cancel)
 
-					Eventually(resultsChan).Should(BeClosed())
-					Eventually(errorsChan).Should(BeClosed())
-				})
-			})
-		})
-	})
-
-	Describe("Fetching Task States", func() {
-		var resultsChan <-chan []cc_messages.CCTaskState
-		var errorsChan <-chan error
-
-		JustBeforeEach(func() {
-			resultsChan, errorsChan = fetcher.FetchTaskStates(logger, cancel, httpClient)
-		})
-
-		AfterEach(func() {
-			Eventually(resultsChan).Should(BeClosed())
-			Eventually(errorsChan).Should(BeClosed())
-		})
-
-		Context("when retrieving task states", func() {
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", "/internal/v3/bulk/task_states", "batch_size=2&token={}"),
-						ghttp.VerifyBasicAuth("the-username", "the-password"),
-						ghttp.RespondWith(200, `{
-						"token": {"id":"the-token-id"},
-						"task_states": [
-							{
-								"task_guid": "task-guid-1",
-								"state": "RUNNING"
-							},
-							{
-								"task_guid": "task-guid-2",
-								"state": "PENDING"
-							}
-						]
-					}`),
-					),
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", "/internal/v3/bulk/task_states", `batch_size=2&token={"id":"the-token-id"}`),
-						ghttp.VerifyBasicAuth("the-username", "the-password"),
-						ghttp.RespondWith(200, `{
-							"token": {"id":"another-token-id"},
-							"task_states": [
-								{
-									"task_guid": "task-guid-3",
-									"state": "COMPLETE"
-								}
-							]
-						}`),
-					),
-				)
-			})
-
-			It("retrieves task states of all tasks known by CC", func() {
-				Eventually(resultsChan).Should(Receive(ConsistOf(
-					cc_messages.CCTaskState{
-						TaskGuid: "task-guid-1",
-						State:    "RUNNING",
-					},
-					cc_messages.CCTaskState{
-						TaskGuid: "task-guid-2",
-						State:    "PENDING",
-					},
-				)))
-
-				Eventually(resultsChan).Should(Receive(ConsistOf(
-					cc_messages.CCTaskState{
-						TaskGuid: "task-guid-3",
-						State:    "COMPLETE",
-					})))
-
-				Eventually(resultsChan).Should(BeClosed())
-				Expect(fakeCC.ReceivedRequests()).To(HaveLen(2))
-			})
-		})
-
-		Context("when the response is missing a bulk token", func() {
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", "/internal/v3/bulk/task_states", "batch_size=2&token={}"),
-						ghttp.VerifyBasicAuth("the-username", "the-password"),
-						ghttp.RespondWith(200, `{
-							"task_states": [
-								{
-									"task_guid": "task-guid-1",
-									"state": "RUNNING"
-								},
-								{
-									"task_guid": "task-guid-2",
-									"state": "PENDING"
-								}
-							]
-						}`),
-					),
-				)
-			})
-
-			It("sends an error on the error channel", func() {
-				Eventually(resultsChan).Should(Receive())
-				Eventually(errorsChan).Should(Receive(MatchError("token not included in response")))
-			})
-
-			It("rerturns the fingerprints that were retrieved", func() {
-				Eventually(resultsChan).Should(Receive(ConsistOf(
-					cc_messages.CCTaskState{
-						TaskGuid: "task-guid-1",
-						State:    "RUNNING",
-					},
-					cc_messages.CCTaskState{
-						TaskGuid: "task-guid-2",
-						State:    "PENDING",
-					},
-				)))
-			})
-		})
-
-		Context("when the API times out", func() {
-			ccResponseTime := 100 * time.Millisecond
-
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(func(w http.ResponseWriter, req *http.Request) {
-					time.Sleep(ccResponseTime)
-
-					w.Write([]byte(`{
-						"token": {"id":"another-token-id"},
-						"task_states": [
-							{
-								"task_guid": "task-guid-1",
-								"state": "RUNNING"
-							},
-							{
-								"task_guid": "task-guid-2",
-								"state": "PENDING"
-							}
-						]
-					}`))
-				})
-
-				httpClient = &http.Client{Timeout: ccResponseTime / 2}
-			})
-
-			It("sends an error on the error channel", func() {
-				Eventually(errorsChan).Should(Receive(BeAssignableToTypeOf(&url.Error{})))
-			})
-		})
-
-		Context("when the API returns an error response", func() {
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(ghttp.RespondWith(403, ""))
-			})
-
-			It("sends an error on the error channel", func() {
-				Eventually(errorsChan).Should(Receive(HaveOccurred()))
-			})
-		})
-
-		Context("when the server responds with invalid JSON", func() {
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(ghttp.RespondWith(200, "{"))
-			})
-
-			It("sends an error on the error channel", func() {
-				Eventually(errorsChan).Should(Receive(HaveOccurred()))
-			})
-		})
-
-		Describe("cancelling", func() {
-			BeforeEach(func() {
-				fakeCC.AppendHandlers(
-					ghttp.CombineHandlers(
-						ghttp.VerifyRequest("GET", "/internal/v3/bulk/task_states", "batch_size=2&token={}"),
-						ghttp.RespondWith(200, `{
-							"token": {"id":"another-token-id"},
-							"task_states": [
-								{
-									"task_guid": "task-guid-3",
-									"state": "COMPLETE"
-								}
-							]
-						}`),
-					),
-				)
-			})
-
-			Context("when waiting to send task states", func() {
-				It("exits when cancelled", func() {
-					close(cancel)
 					Eventually(resultsChan).Should(BeClosed())
 					Eventually(errorsChan).Should(BeClosed())
 				})

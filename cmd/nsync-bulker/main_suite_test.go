@@ -10,14 +10,12 @@ import (
 	"github.com/onsi/ginkgo/config"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
-	"github.com/onsi/gomega/ghttp"
 )
 
 var (
 	bulkerPath string
 
-	bbsURL  *url.URL
-	fakeBBS *ghttp.Server
+	k8sURL *url.URL
 
 	consulRunner *consulrunner.ClusterRunner
 )
@@ -55,13 +53,10 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 var _ = BeforeEach(func() {
 	consulRunner.Start()
 	consulRunner.WaitUntilReady()
-
-	fakeBBS = ghttp.NewServer()
 })
 
 var _ = AfterEach(func() {
 	consulRunner.Stop()
-	fakeBBS.Close()
 })
 
 var _ = SynchronizedAfterSuite(func() {

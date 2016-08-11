@@ -1,8 +1,8 @@
 package bulk_test
 
 import (
-	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/nsync/bulk"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/pivotal-golang/lager/lagertest"
 
@@ -12,8 +12,8 @@ import (
 
 var _ = Describe("Differ", func() {
 	var (
-		existingSchedulingInfo    *models.DesiredLRPSchedulingInfo
-		existingSchedulingInfoMap map[string]*models.DesiredLRPSchedulingInfo
+		existingSchedulingInfo    *bulk.KubeSchedulingInfo
+		existingSchedulingInfoMap map[string]*bulk.KubeSchedulingInfo
 		existingAppFingerprint    cc_messages.CCDesiredAppFingerprint
 
 		cancelChan  chan struct{}
@@ -25,22 +25,32 @@ var _ = Describe("Differ", func() {
 
 		errorsChan <-chan error
 
-		logger *lagertest.TestLogger
-		differ bulk.AppDiffer
+		logger     *lagertest.TestLogger
+		differ     bulk.AppDiffer
+		missingPG1 helpers.ProcessGuid
+		missingPG2 helpers.ProcessGuid
 	)
 
 	BeforeEach(func() {
 		logger = lagertest.NewTestLogger("test")
 
-		existingSchedulingInfo = &models.DesiredLRPSchedulingInfo{
-			DesiredLRPKey: models.NewDesiredLRPKey("process-guid", "domain", "log-guid"),
-			Instances:     1,
-			Annotation:    "some-etag-1",
+		pg, err := helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
+		existingSchedulingInfo = &bulk.KubeSchedulingInfo{
+			ProcessGuid: pg.ShortenedGuid(),
+			Annotation:  make(map[string]string),
+			Instances:   helpers.Int32Ptr(1),
+			ETag:        "some-etag-1",
 		}
 
+		missingPG1, err = helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
+		missingPG2, err = helpers.NewProcessGuid(generateProcessGuid())
+		Expect(err).NotTo(HaveOccurred())
+
 		existingAppFingerprint = cc_messages.CCDesiredAppFingerprint{
-			ProcessGuid: existingSchedulingInfo.ProcessGuid,
-			ETag:        existingSchedulingInfo.Annotation,
+			ProcessGuid: pg.String(),
+			ETag:        existingSchedulingInfo.ETag,
 		}
 
 		desiredChan = make(chan []cc_messages.CCDesiredAppFingerprint, 1)
@@ -48,7 +58,7 @@ var _ = Describe("Differ", func() {
 	})
 
 	JustBeforeEach(func() {
-		existingSchedulingInfoMap = map[string]*models.DesiredLRPSchedulingInfo{
+		existingSchedulingInfoMap = map[string]*bulk.KubeSchedulingInfo{
 			existingSchedulingInfo.ProcessGuid: existingSchedulingInfo,
 		}
 		differ = bulk.NewAppDiffer(existingSchedulingInfoMap)
@@ -96,11 +106,11 @@ var _ = Describe("Differ", func() {
 			BeforeEach(func() {
 				missingAppFingerprints = []cc_messages.CCDesiredAppFingerprint{
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "missing-guid-1",
+						ProcessGuid: missingPG1.String(),
 						ETag:        "missing-etag-1",
 					},
 					cc_messages.CCDesiredAppFingerprint{
-						ProcessGuid: "missing-guid-2",
+						ProcessGuid: missingPG2.String(),
 						ETag:        "missing-etag-2",
 					},
 				}
@@ -163,7 +173,7 @@ var _ = Describe("Differ", func() {
 
 		It("continues to process the apps in batches", func() {
 			fingerprint := cc_messages.CCDesiredAppFingerprint{
-				ProcessGuid: "missing-process-guid",
+				ProcessGuid: missingPG1.String(),
 				ETag:        "missing-etag",
 			}
 			desiredAppFingerprints := []cc_messages.CCDesiredAppFingerprint{fingerprint}
@@ -195,7 +205,7 @@ var _ = Describe("Differ", func() {
 		Context("when waiting to send missing fingerprints", func() {
 			BeforeEach(func() {
 				Eventually(desiredChan).Should(BeSent([]cc_messages.CCDesiredAppFingerprint{{
-					ProcessGuid: "missing-process-guid",
+					ProcessGuid: missingPG1.String(),
 					ETag:        "missing-process-etag",
 				}}))
 			})

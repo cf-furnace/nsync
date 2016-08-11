@@ -2,6 +2,7 @@ package bulk
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -9,18 +10,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudfoundry-incubator/bbs"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3/typed/core/v1"
+	"k8s.io/kubernetes/pkg/labels"
+
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/cf_http"
 	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/nsync/recipebuilder"
-	"github.com/cloudfoundry-incubator/routing-info/cfroutes"
-	"github.com/cloudfoundry-incubator/routing-info/tcp_routes"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/cloudfoundry-incubator/runtime-schema/metric"
 	"github.com/cloudfoundry/gunk/workpool"
 	"github.com/pivotal-golang/clock"
 	"github.com/pivotal-golang/lager"
+	kubeerrors "k8s.io/kubernetes/pkg/api/errors"
 )
 
 const (
@@ -29,7 +33,7 @@ const (
 )
 
 type LRPProcessor struct {
-	bbsClient             bbs.Client
+	k8sClient             v1core.CoreInterface
 	pollingInterval       time.Duration
 	domainTTL             time.Duration
 	bulkBatchSize         uint
@@ -37,24 +41,37 @@ type LRPProcessor struct {
 	httpClient            *http.Client
 	logger                lager.Logger
 	fetcher               Fetcher
-	builders              map[string]recipebuilder.RecipeBuilder
+	furnaceBuilders       map[string]recipebuilder.FurnaceRecipeBuilder
 	clock                 clock.Clock
+}
+
+type CCDesiredAppFingerprintWithShortenedGUID struct {
+	ProcessGuid string `json:"process_guid"`
+	ETag        string `json:"etag"`
+}
+
+type KubeSchedulingInfo struct {
+	ProcessGuid string
+	Annotation  map[string]string `json:"annotations,omitempty" protobuf:"bytes,12,rep,name=annotations"`
+	Instances   *int32            `json:"replicas,omitempty" protobuf:"varint,1,opt,name=replicas"`
+	//Routes               models.Routes     `protobuf:"bytes,5,opt,name=routes,customtype=Routes" json:"routes"`
+	ETag string
 }
 
 func NewLRPProcessor(
 	logger lager.Logger,
-	bbsClient bbs.Client,
+	k8sClient v1core.CoreInterface,
 	pollingInterval time.Duration,
 	domainTTL time.Duration,
 	bulkBatchSize uint,
 	updateLRPWorkPoolSize int,
 	skipCertVerify bool,
 	fetcher Fetcher,
-	builders map[string]recipebuilder.RecipeBuilder,
+	furnaceBuilders map[string]recipebuilder.FurnaceRecipeBuilder,
 	clock clock.Clock,
 ) *LRPProcessor {
 	return &LRPProcessor{
-		bbsClient:             bbsClient,
+		k8sClient:             k8sClient,
 		pollingInterval:       pollingInterval,
 		domainTTL:             domainTTL,
 		bulkBatchSize:         bulkBatchSize,
@@ -62,7 +79,7 @@ func NewLRPProcessor(
 		httpClient:            initializeHttpClient(skipCertVerify),
 		logger:                logger,
 		fetcher:               fetcher,
-		builders:              builders,
+		furnaceBuilders:       furnaceBuilders,
 		clock:                 clock,
 	}
 }
@@ -108,12 +125,12 @@ func (l *LRPProcessor) sync(signals <-chan os.Signal) bool {
 
 	defer logger.Info("done")
 
-	existing, err := l.getSchedulingInfos(logger)
+	existingSchedulingInfoMap, err := l.getSchedulingInfoMap(logger)
 	if err != nil {
 		return false
 	}
 
-	existingSchedulingInfoMap := organizeSchedulingInfosByProcessGuid(existing)
+	//existingSchedulingInfoMap := organizeSchedulingInfosByProcessGuid(existing)
 	appDiffer := NewAppDiffer(existingSchedulingInfoMap)
 
 	cancelCh := make(chan struct{})
@@ -156,6 +173,7 @@ func (l *LRPProcessor) sync(signals <-chan os.Signal) bool {
 
 	// closes errors when all error channels have been closed.
 	// below, we rely on this behavior to break the process_loop.
+	logger.Debug("merging all errors")
 	errors := mergeErrors(
 		fingerprintErrorCh,
 		diffErrorCh,
@@ -197,12 +215,12 @@ process_loop:
 
 	if bumpFreshness && success {
 		logger.Info("bumping-freshness")
-
-		err = l.bbsClient.UpsertDomain(logger, cc_messages.AppLRPDomain, l.domainTTL)
-		if err != nil {
-			logger.Error("failed-to-upsert-domain", err)
-		}
 	}
+	// 	err = l.bbsClient.UpsertDomain(logger, cc_messages.AppLRPDomain, l.domainTTL)
+	// 	if err != nil {
+	// 		logger.Error("failed-to-upsert-domain", err)
+	// 	}
+	// }
 
 	return false
 }
@@ -239,25 +257,29 @@ func (l *LRPProcessor) createMissingDesiredLRPs(
 
 			for i, desireAppRequest := range desireAppRequests {
 				desireAppRequest := desireAppRequest
-				var builder recipebuilder.RecipeBuilder = l.builders["buildpack"]
+
+				builder := l.furnaceBuilders["buildpack"]
 				if desireAppRequest.DockerImageUrl != "" {
-					builder = l.builders["docker"]
+					builder = l.furnaceBuilders["docker"]
 				}
 
 				works[i] = func() {
 					logger.Debug("building-create-desired-lrp-request", desireAppRequestDebugData(&desireAppRequest))
-					desired, err := builder.Build(&desireAppRequest)
+					desired, err := builder.BuildReplicationController(&desireAppRequest)
 					if err != nil {
 						logger.Error("failed-building-create-desired-lrp-request", err, lager.Data{"process-guid": desireAppRequest.ProcessGuid})
 						errc <- err
 						return
 					}
+
 					logger.Debug("succeeded-building-create-desired-lrp-request", desireAppRequestDebugData(&desireAppRequest))
 
 					logger.Debug("creating-desired-lrp", createDesiredReqDebugData(desired))
-					err = l.bbsClient.DesireLRP(logger, desired)
+					// obtain the namespace from the desired metadata
+					namespace := desired.ObjectMeta.Namespace
+					_, err = l.k8sClient.ReplicationControllers(namespace).Create(desired)
 					if err != nil {
-						logger.Error("failed-creating-desired-lrp", err, lager.Data{"process-guid": desired.ProcessGuid})
+						logger.Error("failed-creating-desired-lrp", err, lager.Data{"process-guid": desireAppRequest.ProcessGuid})
 						if models.ConvertError(err).Type == models.Error_InvalidRequest {
 							atomic.AddInt32(invalidCount, int32(1))
 						} else {
@@ -288,7 +310,7 @@ func (l *LRPProcessor) updateStaleDesiredLRPs(
 	logger lager.Logger,
 	cancel <-chan struct{},
 	stale <-chan []cc_messages.DesireAppRequestFromCC,
-	existingSchedulingInfoMap map[string]*models.DesiredLRPSchedulingInfo,
+	existingSchedulingInfoMap map[string]*KubeSchedulingInfo,
 	invalidCount *int32,
 ) <-chan error {
 	logger = logger.Session("update-stale-desired-lrps")
@@ -317,60 +339,73 @@ func (l *LRPProcessor) updateStaleDesiredLRPs(
 
 			for i, desireAppRequest := range staleAppRequests {
 				desireAppRequest := desireAppRequest
-				var builder recipebuilder.RecipeBuilder = l.builders["buildpack"]
+				builder := l.furnaceBuilders["buildpack"]
 				if desireAppRequest.DockerImageUrl != "" {
-					builder = l.builders["docker"]
+					builder = l.furnaceBuilders["docker"]
+				}
+
+				if builder == nil {
+					err := errors.New("oh no builder nil")
+					logger.Error("builder cannot be nil", err, lager.Data{"builder": builder})
+					errc <- err
+					return
 				}
 
 				works[i] = func() {
-					processGuid := desireAppRequest.ProcessGuid
-					existingSchedulingInfo := existingSchedulingInfoMap[desireAppRequest.ProcessGuid]
-
-					updateReq := &models.DesiredLRPUpdate{}
-					instances := int32(desireAppRequest.NumInstances)
-					updateReq.Instances = &instances
-					updateReq.Annotation = &desireAppRequest.ETag
-
-					exposedPorts, err := builder.ExtractExposedPorts(&desireAppRequest)
+					processGuid, err := helpers.NewProcessGuid(desireAppRequest.ProcessGuid)
 					if err != nil {
-						logger.Error("failed-updating-stale-lrp", err, lager.Data{
-							"process-guid":       processGuid,
-							"execution-metadata": desireAppRequest.ExecutionMetadata,
-						})
+						logger.Error("failed to create new process guid", err)
 						errc <- err
 						return
 					}
+					//existingSchedulingInfo := existingSchedulingInfoMap[processGuid.ShortenedGuid()]
 
-					routes, err := helpers.CCRouteInfoToRoutes(desireAppRequest.RoutingInfo, exposedPorts)
+					//instances := int32(desireAppRequest.NumInstances)
+					logger.Debug("printing desired app req", lager.Data{"data": desireAppRequest})
+
+					replicationController, err := builder.BuildReplicationController(&desireAppRequest)
 					if err != nil {
-						logger.Error("failed-to-marshal-routes", err)
+						logger.Error("failed-to-transform-stale-app-to-rc", err)
 						errc <- err
 						return
 					}
+					// exposedPorts, err := builder.ExtractExposedPorts(&desireAppRequest)
+					// if err != nil {
+					// 	logger.Error("failed-updating-stale-lrp", err, lager.Data{
+					// 		"process-guid":       processGuid,
+					// 		"execution-metadata": desireAppRequest.ExecutionMetadata,
+					// 	})
+					// 	errc <- err
+					// 	return
+					// }
+					//
+					// routes, err := helpers.CCRouteInfoToRoutes(desireAppRequest.RoutingInfo, exposedPorts)
+					// if err != nil {
+					// 	logger.Error("failed-to-marshal-routes", err)
+					// 	errc <- err
+					// 	return
+					// }
+					//
+					// updateReq.Routes = &routes
+					//
+					// for k, v := range existingSchedulingInfo.Routes {
+					// 	if k != cfroutes.CF_ROUTER && k != tcp_routes.TCP_ROUTER {
+					// 		(*updateReq.Routes)[k] = v
+					// 	}
+					// }
 
-					updateReq.Routes = &routes
+					logger.Debug("updating-stale-lrp", updateDesiredRequestDebugData(processGuid.String(), replicationController))
 
-					for k, v := range existingSchedulingInfo.Routes {
-						if k != cfroutes.CF_ROUTER && k != tcp_routes.TCP_ROUTER {
-							(*updateReq.Routes)[k] = v
-						}
-					}
-
-					logger.Debug("updating-stale-lrp", updateDesiredRequestDebugData(processGuid, updateReq))
-					err = l.bbsClient.UpdateDesiredLRP(logger, processGuid, updateReq)
-					if err != nil {
-						logger.Error("failed-updating-stale-lrp", err, lager.Data{
+					_, err1 := l.k8sClient.ReplicationControllers(replicationController.ObjectMeta.Namespace).Update(replicationController)
+					if err1 != nil {
+						logger.Error("failed-updating-stale-lrp", err1, lager.Data{
 							"process-guid": processGuid,
 						})
 
-						if models.ConvertError(err).Type == models.Error_InvalidRequest {
-							atomic.AddInt32(invalidCount, int32(1))
-						} else {
-							errc <- err
-						}
+						errc <- err1
 						return
 					}
-					logger.Debug("succeeded-updating-stale-lrp", updateDesiredRequestDebugData(processGuid, updateReq))
+					logger.Debug("succeeded-updating-stale-lrp", updateDesiredRequestDebugData(processGuid.String(), replicationController))
 				}
 			}
 
@@ -389,14 +424,35 @@ func (l *LRPProcessor) updateStaleDesiredLRPs(
 	return errc
 }
 
-func (l *LRPProcessor) getSchedulingInfos(logger lager.Logger) ([]*models.DesiredLRPSchedulingInfo, error) {
-	logger.Info("getting-desired-lrps-from-bbs")
-	existing, err := l.bbsClient.DesiredLRPSchedulingInfos(logger, models.DesiredLRPFilter{Domain: cc_messages.AppLRPDomain})
+func (l *LRPProcessor) getSchedulingInfoMap(logger lager.Logger) (map[string]*KubeSchedulingInfo, error) {
+	logger.Info("getting-desired-lrps-from-kube")
+	opts := api.ListOptions{
+		LabelSelector: labels.Set{"cloudfoundry.org/domain": cc_messages.AppLRPDomain}.AsSelector(),
+	}
+	//logger.Debug("opts to list replication controller", lager.Data{"data": opts.LabelSelector.String()})
+	rcList, err := l.k8sClient.ReplicationControllers(api.NamespaceAll).List(opts)
 	if err != nil {
-		logger.Error("failed-getting-desired-lrps-from-bbs", err)
+		logger.Error("failed-getting-desired-lrps-from-kube", err)
 		return nil, err
 	}
-	logger.Info("succeeded-getting-desired-lrps-from-bbs", lager.Data{"count": len(existing)})
+	logger.Debug("list replication controller", lager.Data{"data": rcList.Items})
+
+	existing := make(map[string]*KubeSchedulingInfo)
+	if len(rcList.Items) == 0 {
+		logger.Info("empty kube scheduling info found")
+		return existing, nil
+	}
+	for _, rc := range rcList.Items {
+		shortenedProcessGuid := rc.ObjectMeta.Name // shortened guid, todo: need to convert to original guids
+		existing[shortenedProcessGuid] = &KubeSchedulingInfo{
+			ProcessGuid: shortenedProcessGuid,
+			Annotation:  rc.ObjectMeta.Annotations,
+			Instances:   rc.Spec.Replicas,
+			ETag:        rc.ObjectMeta.Annotations["cloudfoundry.org/etag"],
+		}
+	}
+
+	logger.Info("succeeded-getting-desired-lrps-from-kube", lager.Data{"count": len(existing)})
 
 	return existing, nil
 }
@@ -407,7 +463,7 @@ func (l *LRPProcessor) deleteExcess(logger lager.Logger, cancel <-chan struct{},
 	logger.Info("processing-batch", lager.Data{"num-to-delete": len(excess), "guids-to-delete": excess})
 	deletedGuids := make([]string, 0, len(excess))
 	for _, deleteGuid := range excess {
-		err := l.bbsClient.RemoveDesiredLRP(logger, deleteGuid)
+		_, err := deleteReplicationController(logger, l.k8sClient, deleteGuid)
 		if err != nil {
 			logger.Error("failed-processing-batch", err, lager.Data{"delete-request": deleteGuid})
 		} else {
@@ -478,25 +534,26 @@ func organizeSchedulingInfosByProcessGuid(list []*models.DesiredLRPSchedulingInf
 	return result
 }
 
-func updateDesiredRequestDebugData(processGuid string, updateDesiredRequest *models.DesiredLRPUpdate) lager.Data {
+func updateDesiredRequestDebugData(processGuid string, rc *v1.ReplicationController) lager.Data {
 	return lager.Data{
 		"process-guid": processGuid,
-		"instances":    updateDesiredRequest.Instances,
+		"instances":    rc.Spec.Replicas,
+		"etag":         rc.ObjectMeta.Annotations["cloudfoundry.org/etag"],
 	}
 }
 
-func createDesiredReqDebugData(createDesiredRequest *models.DesiredLRP) lager.Data {
+func createDesiredReqDebugData(rc *v1.ReplicationController) lager.Data {
+	container := rc.Spec.Template.Spec.Containers[0]
 	return lager.Data{
-		"process-guid": createDesiredRequest.ProcessGuid,
-		"log-guid":     createDesiredRequest.LogGuid,
-		"metric-guid":  createDesiredRequest.MetricsGuid,
-		"root-fs":      createDesiredRequest.RootFs,
-		"instances":    createDesiredRequest.Instances,
-		"timeout":      createDesiredRequest.StartTimeoutMs,
-		"disk":         createDesiredRequest.DiskMb,
-		"memory":       createDesiredRequest.MemoryMb,
-		"cpu":          createDesiredRequest.CpuWeight,
-		"privileged":   createDesiredRequest.Privileged,
+		"process-guid": rc.ObjectMeta.Labels["cloudfoundry.org/process-guid"],
+		"log-guid":     rc.ObjectMeta.Annotations["cloudfoundry.org/log-guid"],
+		"metric-guid":  rc.ObjectMeta.Annotations["cloudfoundry.org/metrics-guid"],
+		"instances":    rc.Spec.Replicas,
+		//"timeout":      createDesiredRequest.StartTimeoutMs,
+		"disk":   container.Resources.Limits["cloudfoundry.org/storage-space"],
+		"memory": container.Resources.Limits[v1.ResourceMemory],
+		"cpu":    container.Resources.Limits[v1.ResourceCPU],
+		//"privileged":   createDesiredRequest.Privileged,
 	}
 }
 
@@ -529,4 +586,64 @@ func initializeHttpClient(skipCertVerify bool) *http.Client {
 		},
 	}
 	return httpClient
+}
+
+func deleteReplicationController(logger lager.Logger, k8sClient v1core.CoreInterface, processGuid string) (int, error) {
+	rcList, err := k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
+		LabelSelector: labels.Set{"cloudfoundry.org/process-guid": processGuid}.AsSelector(),
+	})
+
+	if err != nil {
+		logger.Error("replication-controller-list-failed", err)
+		return http.StatusInternalServerError, err
+	}
+
+	if len(rcList.Items) == 0 {
+		logger.Info("desired-lrp-not-found")
+		return http.StatusNotFound, err
+	}
+
+	logger.Debug("deleting replication controllers", lager.Data{"to be deleted": rcList})
+	for _, rcValue := range rcList.Items {
+		rc := &rcValue
+		rc.Spec.Replicas = helpers.Int32Ptr(0)
+
+		rc, err = k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Get(rc.ObjectMeta.Name)
+		if err != nil {
+			logger.Error("get-replication-controller-failed", err)
+			code := responseCodeFromError(err)
+			if code == http.StatusNotFound {
+				continue
+			}
+			return code, err
+		}
+
+		logger.Debug("found replication controller", lager.Data{"to be deleted": rc})
+		if err := k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Delete(rc.ObjectMeta.Name, nil); err != nil {
+			logger.Error("delete-replication-controller-failed", err)
+			code := responseCodeFromError(err)
+			if code == http.StatusNotFound {
+				continue
+			}
+			return code, err
+		} else {
+			logger.Debug("deleted replication controller successfully", lager.Data{"rc": rc.ObjectMeta.Name})
+		}
+	}
+
+	return http.StatusAccepted, nil
+}
+
+func responseCodeFromError(err error) int {
+	switch err := err.(type) {
+	case *kubeerrors.StatusError:
+		switch err.ErrStatus.Code {
+		case http.StatusNotFound:
+			return http.StatusNotFound
+		default:
+			return http.StatusInternalServerError
+		}
+	default:
+		return http.StatusInternalServerError
+	}
 }

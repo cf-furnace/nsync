@@ -1,7 +1,7 @@
 package bulk
 
 import (
-	"github.com/cloudfoundry-incubator/bbs/models"
+	"github.com/cloudfoundry-incubator/nsync/helpers"
 	"github.com/cloudfoundry-incubator/runtime-schema/cc_messages"
 	"github.com/pivotal-golang/lager"
 )
@@ -19,14 +19,14 @@ type AppDiffer interface {
 }
 
 type appDiffer struct {
-	existingSchedulingInfos map[string]*models.DesiredLRPSchedulingInfo
+	existingSchedulingInfos map[string]*KubeSchedulingInfo
 
 	stale   chan []cc_messages.CCDesiredAppFingerprint
 	missing chan []cc_messages.CCDesiredAppFingerprint
 	deleted chan []string
 }
 
-func NewAppDiffer(existing map[string]*models.DesiredLRPSchedulingInfo) AppDiffer {
+func NewAppDiffer(existing map[string]*KubeSchedulingInfo) AppDiffer {
 	return &appDiffer{
 		existingSchedulingInfos: copySchedulingInfoMap(existing),
 
@@ -71,7 +71,12 @@ func (d *appDiffer) Diff(
 				stale := []cc_messages.CCDesiredAppFingerprint{}
 
 				for _, fingerprint := range batch {
-					desiredLRP, found := d.existingSchedulingInfos[fingerprint.ProcessGuid]
+					processGuid, err := helpers.NewProcessGuid(fingerprint.ProcessGuid)
+					if err != nil {
+						logger.Error("unable to create new process guid", err)
+						continue
+					}
+					kubeSchedulingInfo, found := d.existingSchedulingInfos[processGuid.ShortenedGuid()]
 					if !found {
 						logger.Info("found-missing-desired-lrp", lager.Data{
 							"guid": fingerprint.ProcessGuid,
@@ -82,9 +87,9 @@ func (d *appDiffer) Diff(
 						continue
 					}
 
-					delete(d.existingSchedulingInfos, fingerprint.ProcessGuid)
+					delete(d.existingSchedulingInfos, processGuid.ShortenedGuid())
 
-					if desiredLRP.Annotation != fingerprint.ETag {
+					if kubeSchedulingInfo.ETag != fingerprint.ETag {
 						logger.Info("found-stale-lrp", lager.Data{
 							"guid": fingerprint.ProcessGuid,
 							"etag": fingerprint.ETag,
@@ -116,15 +121,15 @@ func (d *appDiffer) Diff(
 	return errc
 }
 
-func copySchedulingInfoMap(schedulingInfoMap map[string]*models.DesiredLRPSchedulingInfo) map[string]*models.DesiredLRPSchedulingInfo {
-	clone := map[string]*models.DesiredLRPSchedulingInfo{}
+func copySchedulingInfoMap(schedulingInfoMap map[string]*KubeSchedulingInfo) map[string]*KubeSchedulingInfo {
+	clone := map[string]*KubeSchedulingInfo{}
 	for k, v := range schedulingInfoMap {
 		clone[k] = v
 	}
 	return clone
 }
 
-func remainingProcessGuids(remaining map[string]*models.DesiredLRPSchedulingInfo) []string {
+func remainingProcessGuids(remaining map[string]*KubeSchedulingInfo) []string {
 	keys := make([]string, 0, len(remaining))
 	for _, schedulingInfo := range remaining {
 		keys = append(keys, schedulingInfo.ProcessGuid)

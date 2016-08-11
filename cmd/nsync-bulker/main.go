@@ -3,11 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"time"
 
-	"github.com/cloudfoundry-incubator/bbs"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
+	"k8s.io/kubernetes/pkg/client/restclient"
+
 	"github.com/cloudfoundry-incubator/cf-debug-server"
 	cf_lager "github.com/cloudfoundry-incubator/cf-lager"
 	"github.com/cloudfoundry-incubator/cf_http"
@@ -31,13 +32,7 @@ import (
 var privilegedContainers = flag.Bool(
 	"privilegedContainers",
 	false,
-	"Whether or not to use privileged containers for  buildpack based LRPs and tasks. Containers with a docker-image-based rootfs will continue to always be unprivileged and cannot be changed.",
-)
-
-var bbsAddress = flag.String(
-	"bbsAddress",
-	"",
-	"Address to the BBS Server",
+	"Whether or not to use privileged containers for buildpack based LRPs and tasks. Containers with a docker-image-based rootfs will continue to always be unprivileged and cannot be changed.",
 )
 
 var consulCluster = flag.String(
@@ -118,36 +113,6 @@ var fileServerURL = flag.String(
 	"URL of the file server",
 )
 
-var bbsCACert = flag.String(
-	"bbsCACert",
-	"",
-	"path to certificate authority cert used for mutually authenticated TLS BBS communication",
-)
-
-var bbsClientCert = flag.String(
-	"bbsClientCert",
-	"",
-	"path to client cert used for mutually authenticated TLS BBS communication",
-)
-
-var bbsClientKey = flag.String(
-	"bbsClientKey",
-	"",
-	"path to client key used for mutually authenticated TLS BBS communication",
-)
-
-var bbsClientSessionCacheSize = flag.Int(
-	"bbsClientSessionCacheSize",
-	0,
-	"Capacity of the ClientSessionCache option on the TLS configuration. If zero, golang's default will be used",
-)
-
-var bbsMaxIdleConnsPerHost = flag.Int(
-	"bbsMaxIdleConnsPerHost",
-	0,
-	"Controls the maximum number of idle (keep-alive) connctions per host. If zero, golang's default will be used",
-)
-
 var updateLRPWorkers = flag.Int(
 	"updateLRPWorkers",
 	50,
@@ -168,6 +133,30 @@ var cancelTaskPoolSize = flag.Int(
 
 const (
 	dropsondeOrigin = "nsync_bulker"
+)
+
+var kubeCluster = flag.String(
+	"kubeCluster",
+	"",
+	"kubernetes API server URL (scheme://ip:port)",
+)
+
+var kubeCACert = flag.String(
+	"kubeCACert",
+	"",
+	"path to kubernetes API server CA certificate",
+)
+
+var kubeClientCert = flag.String(
+	"kubeClientCert",
+	"",
+	"path to client certificate for authentication with the kubernetes API server",
+)
+
+var kubeClientKey = flag.String(
+	"kubeClientKey",
+	"",
+	"path to client key for authentication with the kubernetes API server",
 )
 
 func main() {
@@ -203,14 +192,16 @@ func main() {
 		PrivilegedContainers: *privilegedContainers,
 	}
 
-	recipeBuilders := map[string]recipebuilder.RecipeBuilder{
+	furnaceBuilders := map[string]recipebuilder.FurnaceRecipeBuilder{
 		"buildpack": recipebuilder.NewBuildpackRecipeBuilder(logger, buildpackRecipeBuilderConfig),
 		"docker":    recipebuilder.NewDockerRecipeBuilder(logger, dockerRecipeBuilderConfig),
 	}
 
+	clientSet := initializeK8sClient(logger)
+
 	lrpRunner := bulk.NewLRPProcessor(
 		logger,
-		initializeBBSClient(logger),
+		clientSet.Core(),
 		*pollingInterval,
 		*domainTTL,
 		*bulkBatchSize,
@@ -222,32 +213,13 @@ func main() {
 			Username:  *ccUsername,
 			Password:  *ccPassword,
 		},
-		recipeBuilders,
-		clock.NewClock(),
-	)
-
-	taskRunner := bulk.NewTaskProcessor(
-		logger,
-		initializeBBSClient(logger),
-		&bulk.CCTaskClient{},
-		*pollingInterval,
-		*domainTTL,
-		*failTaskPoolSize,
-		*cancelTaskPoolSize,
-		*skipCertVerify,
-		&bulk.CCFetcher{
-			BaseURI:   *ccBaseURL,
-			BatchSize: int(*bulkBatchSize),
-			Username:  *ccUsername,
-			Password:  *ccPassword,
-		},
+		furnaceBuilders,
 		clock.NewClock(),
 	)
 
 	members := grouper.Members{
 		{"lock-maintainer", lockMaintainer},
 		{"lrp-runner", lrpRunner},
-		{"task-runner", taskRunner},
 	}
 
 	if dbgAddr := cf_debug_server.DebugAddress(flag.CommandLine); dbgAddr != "" {
@@ -291,19 +263,19 @@ func initializeServiceClient(logger lager.Logger) nsync.ServiceClient {
 	return nsync.NewServiceClient(consulClient, clock.NewClock())
 }
 
-func initializeBBSClient(logger lager.Logger) bbs.Client {
-	bbsURL, err := url.Parse(*bbsAddress)
+func initializeK8sClient(logger lager.Logger) clientset.Interface {
+	k8sClient, err := clientset.NewForConfig(&restclient.Config{
+		Host: *kubeCluster,
+		TLSClientConfig: restclient.TLSClientConfig{
+			CertFile: *kubeClientCert,
+			KeyFile:  *kubeClientKey,
+			CAFile:   *kubeCACert,
+		},
+	})
+
 	if err != nil {
-		logger.Fatal("Invalid BBS URL", err)
+		logger.Fatal("Can't create Kubernetes Client", err, lager.Data{"address": *kubeCluster})
 	}
 
-	if bbsURL.Scheme != "https" {
-		return bbs.NewClient(*bbsAddress)
-	}
-
-	bbsClient, err := bbs.NewSecureClient(*bbsAddress, *bbsCACert, *bbsClientCert, *bbsClientKey, *bbsClientSessionCacheSize, *bbsMaxIdleConnsPerHost)
-	if err != nil {
-		logger.Fatal("Failed to configure secure BBS client", err)
-	}
-	return bbsClient
+	return k8sClient
 }
