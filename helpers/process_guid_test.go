@@ -102,9 +102,9 @@ var _ = Describe("ProcessGuid", func() {
 		})
 
 		It("returns the correct process guid", func() {
-			processGuidString, err := helpers.DecodeProcessGuid(shortenedProcessGuid)
+			decodedProcessGuid, err := helpers.DecodeProcessGuid(shortenedProcessGuid)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(processGuidString).To(Equal(processGuid.String()))
+			Expect(decodedProcessGuid.String()).To(Equal(processGuid.String()))
 		})
 	})
 
