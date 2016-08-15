@@ -48,3 +48,44 @@ func (pg ProcessGuid) String() string {
 func trimPadding(s string) string {
 	return strings.TrimRight(s, "=")
 }
+
+func addPadding(s string) string {
+	for len(s)%8 != 0 {
+		s = s + "="
+	}
+
+	return s
+}
+
+func DecodeProcessGuid(shortenedGuid string) (string, error) {
+	splited := strings.Split(shortenedGuid, "-")
+	if len(splited) != 2 {
+		return "", errors.New("invalid shortened process guid")
+	}
+	// add padding
+	appGuid := addPadding(strings.ToUpper(splited[0]))
+	appVersion := addPadding(strings.ToUpper(splited[1]))
+
+	// decode it
+	longAppGuid, err := base32.StdEncoding.DecodeString(appGuid[:])
+	if err != nil {
+		return "", errors.New("Unable to decode appGuid - invalid shortened process guid")
+	}
+	longAppVersion, err := base32.StdEncoding.DecodeString(appVersion[:])
+	if err != nil {
+		return "", errors.New("Unable to decode appVersion - invalid shortened process guid")
+	}
+
+	appGuidUUID, err := uuid.Parse(longAppGuid)
+	appVersionUUID, err := uuid.Parse(longAppVersion)
+
+	if err != nil {
+		return "", errors.New("Unable to parse appGuid - invalid shortened process guid")
+	}
+
+	if err != nil {
+		return "", errors.New("Unable to parse appVersion - invalid shortened process guid")
+	}
+
+	return appGuidUUID.String() + "-" + appVersionUUID.String(), nil
+}

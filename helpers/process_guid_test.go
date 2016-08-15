@@ -13,10 +13,12 @@ import (
 var _ = Describe("ProcessGuid", func() {
 	var processGuid helpers.ProcessGuid
 	var appGuid, appVersion string
+	var shortenedProcessGuid string
 
 	BeforeEach(func() {
 		appGuid = "8d58c09b-b305-4f16-bcfe-b78edcb77100"
 		appVersion = "3f258eb0-9dac-460c-a424-b43fe92bee27"
+		shortenedProcessGuid = "rvmmbg5tavhrnph6w6hnzn3raa-h4sy5me5vrdazjbewq76sk7oe4"
 	})
 
 	Describe("NewProcessGuid", func() {
@@ -72,7 +74,7 @@ var _ = Describe("ProcessGuid", func() {
 		})
 
 		It("returns an encoded version of the process guid", func() {
-			Expect(processGuid.ShortenedGuid()).To(Equal("rvmmbg5tavhrnph6w6hnzn3raa-h4sy5me5vrdazjbewq76sk7oe4"))
+			Expect(processGuid.ShortenedGuid()).To(Equal(shortenedProcessGuid))
 		})
 
 		It("is a valid kubernetes dns label", func() {
@@ -89,6 +91,31 @@ var _ = Describe("ProcessGuid", func() {
 
 		It("returns the normal representation of a process guid", func() {
 			Expect(processGuid.String()).To(Equal(appGuid + "-" + appVersion))
+		})
+	})
+
+	Describe("decode a shortened process guid to the original guid string", func() {
+		BeforeEach(func() {
+			pg, err := helpers.NewProcessGuid(fmt.Sprintf("%s-%s", appGuid, appVersion))
+			Expect(err).NotTo(HaveOccurred())
+			processGuid = pg
+		})
+
+		It("returns the correct process guid", func() {
+			processGuidString, err := helpers.DecodeProcessGuid(shortenedProcessGuid)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(processGuidString).To(Equal(processGuid.String()))
+		})
+	})
+
+	Describe("errors when decode a shortened process guid to the original guid string", func() {
+		BeforeEach(func() {
+			shortenedProcessGuid = "this-is-an-invalid-shortened-guid-with-len"
+		})
+
+		It("returns an error", func() {
+			_, err := helpers.DecodeProcessGuid(shortenedProcessGuid)
+			Expect(err).To(MatchError("invalid shortened process guid"))
 		})
 	})
 })
