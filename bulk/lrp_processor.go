@@ -608,9 +608,9 @@ func deleteReplicationController(logger lager.Logger, k8sClient v1core.CoreInter
 		rc := &rcValue
 		rc.Spec.Replicas = helpers.Int32Ptr(0)
 
-		rc, err = k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Get(rc.ObjectMeta.Name)
+		rc, err = k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Update(rc)
 		if err != nil {
-			logger.Error("get-replication-controller-failed", err)
+			logger.Error("update-replication-controller-failed", err)
 			code := responseCodeFromError(err)
 			if code == http.StatusNotFound {
 				continue
@@ -618,13 +618,13 @@ func deleteReplicationController(logger lager.Logger, k8sClient v1core.CoreInter
 			return code, err
 		}
 
-		logger.Debug("found replication controller", lager.Data{"to be deleted": rc})
 		if err := k8sClient.ReplicationControllers(rc.ObjectMeta.Namespace).Delete(rc.ObjectMeta.Name, nil); err != nil {
 			logger.Error("delete-replication-controller-failed", err)
 			code := responseCodeFromError(err)
 			if code == http.StatusNotFound {
 				continue
 			}
+
 			return code, err
 		} else {
 			logger.Debug("deleted replication controller successfully", lager.Data{"rc": rc.ObjectMeta.Name})

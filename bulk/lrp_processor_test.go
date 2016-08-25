@@ -469,8 +469,9 @@ var _ = Describe("LRPProcessor", func() {
 				})
 
 				It("updates the docker and stale LRP", func() {
-					Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(2))
-					Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(2))
+					// delete call also adds an update count
+					Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(3))
+					Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(3))
 
 					Expect([]string{dockerProcessGuid.ShortenedGuid(), staleProcessGuid.ShortenedGuid()}).To(ConsistOf(
 						fakeReplicationController.UpdateArgsForCall(0).ObjectMeta.Name,
@@ -509,9 +510,10 @@ var _ = Describe("LRPProcessor", func() {
 					// })
 
 					Context("and the differ provides creates, updates, and deletes", func() {
-						It("sends the deletes but not the creates or updates", func() {
+						It("sends the deletes but not the creates", func() {
 							Consistently(fakeReplicationController.CreateCallCount).Should(Equal(0))
-							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(0))
+							// update is 1 because we update the RC replicas to 0
+							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(1))
 							Eventually(fakeReplicationController.DeleteCallCount).Should(Equal(1))
 							Consistently(fakeReplicationController.DeleteCallCount).Should(Equal(1))
 							desired, _ := fakeReplicationController.DeleteArgsForCall(0)
@@ -534,15 +536,15 @@ var _ = Describe("LRPProcessor", func() {
 					// })
 
 					Context("and the differ provides creates, updates, and deletes", func() {
-						It("continues to send the deletes but not create or update", func() {
+						It("continues to send the deletes but not create", func() {
 							Eventually(fakeReplicationController.DeleteCallCount).Should(Equal(1))
 							Consistently(fakeReplicationController.DeleteCallCount).Should(Equal(1))
 
 							desired, _ := fakeReplicationController.DeleteArgsForCall(0)
 							Expect(desired).To(Equal(excessProcessGuid.ShortenedGuid()))
 
-							Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(0))
-							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(0))
+							Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(1))
+							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(1))
 
 							Eventually(fakeReplicationController.CreateCallCount).Should(Equal(0))
 							Consistently(fakeReplicationController.CreateCallCount).Should(Equal(0))
@@ -571,8 +573,8 @@ var _ = Describe("LRPProcessor", func() {
 							desired, _ := fakeReplicationController.DeleteArgsForCall(0)
 							Expect(desired).To(Equal(excessProcessGuid.ShortenedGuid()))
 
-							Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(2))
-							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(2))
+							Eventually(fakeReplicationController.UpdateCallCount).Should(Equal(3))
+							Consistently(fakeReplicationController.UpdateCallCount).Should(Equal(3))
 
 							desired1 := fakeReplicationController.UpdateArgsForCall(0)
 							desired2 := fakeReplicationController.UpdateArgsForCall(1)
@@ -640,7 +642,7 @@ var _ = Describe("LRPProcessor", func() {
 				BeforeEach(func() {
 					expectedPort = 8080
 					expectedRouteHost = "host-stale-process-guid"
-					expectedClientCallCount = 2
+					expectedClientCallCount = 3
 				})
 
 				JustBeforeEach(func() {
@@ -672,11 +674,17 @@ var _ = Describe("LRPProcessor", func() {
 				It("sends the correct update desired lrp request", func() {
 					Expect(processGuids).To(ContainElement(staleProcessGuid.ShortenedGuid()))
 					Expect(processGuids).To(ContainElement(dockerProcessGuid.ShortenedGuid()))
+					Expect(processGuids).To(ContainElement(excessProcessGuid.ShortenedGuid()))
 
 					for i := 0; i < expectedClientCallCount; i++ {
-						Expect([]string{dockerProcessGuid.ShortenedGuid(), staleProcessGuid.ShortenedGuid()}).To(
+						Expect([]string{dockerProcessGuid.ShortenedGuid(), staleProcessGuid.ShortenedGuid(), excessProcessGuid.ShortenedGuid()}).To(
 							ContainElement(rcs[i].ObjectMeta.Name))
-						Expect(rcs[i].Spec.Replicas).To(Equal(&expectedInstances))
+						if rcs[i].ObjectMeta.Name == dockerProcessGuid.ShortenedGuid() || rcs[i].ObjectMeta.Name == staleProcessGuid.ShortenedGuid() {
+							Expect(rcs[i].Spec.Replicas).To(Equal(&expectedInstances))
+						} else {
+							instance := int32(0)
+							Expect(rcs[i].Spec.Replicas).To(Equal(&instance))
+						}
 					}
 
 				})
@@ -709,9 +717,8 @@ var _ = Describe("LRPProcessor", func() {
 				// 	Consistently(bbsClient.UpsertDomainCallCount).Should(Equal(0))
 				// })
 
-				It("sends all the other updates", func() {
+				It("still sends create request, delete/update will be skipped", func() {
 					Eventually(fakeReplicationController.CreateCallCount).Should(Equal(1))
-					Eventually(fakeReplicationController.DeleteCallCount).Should(Equal(1))
 				})
 			})
 
