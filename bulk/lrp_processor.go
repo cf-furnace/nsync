@@ -30,6 +30,7 @@ import (
 const (
 	syncDesiredLRPsDuration = metric.Duration("DesiredLRPSyncDuration")
 	invalidLRPsFound        = metric.Metric("NsyncInvalidDesiredLRPsFound")
+	PROCESS_GUID_LABEL      = "cloudfoundry.org/process-guid"
 )
 
 type LRPProcessor struct {
@@ -426,15 +427,14 @@ func (l *LRPProcessor) updateStaleDesiredLRPs(
 
 func (l *LRPProcessor) getSchedulingInfoMap(logger lager.Logger) (map[string]*KubeSchedulingInfo, error) {
 	logger.Info("getting-desired-lrps-from-kube")
-	selector := labels.NewSelector()
-	r, err := labels.NewRequirement("cloudfoundry.org/process-guid", labels.ExistsOperator, nil)
+	pguidSelector, err := labels.Parse(PROCESS_GUID_LABEL)
 	if err != nil {
 		logger.Error("failed-getting-desired-lrps-from-kube", err)
 		return nil, err
 	}
-	selector = selector.Add(*r)
+
 	opts := api.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: pguidSelector,
 	}
 	logger.Debug("opts to list replication controller", lager.Data{"data": opts.LabelSelector.String()})
 	rcList, err := l.k8sClient.ReplicationControllers(api.NamespaceAll).List(opts)
@@ -552,7 +552,7 @@ func updateDesiredRequestDebugData(processGuid string, rc *v1.ReplicationControl
 func createDesiredReqDebugData(rc *v1.ReplicationController) lager.Data {
 	container := rc.Spec.Template.Spec.Containers[0]
 	return lager.Data{
-		"process-guid": rc.ObjectMeta.Labels["cloudfoundry.org/process-guid"],
+		"process-guid": rc.ObjectMeta.Labels[PROCESS_GUID_LABEL],
 		"log-guid":     rc.ObjectMeta.Annotations["cloudfoundry.org/log-guid"],
 		"metric-guid":  rc.ObjectMeta.Annotations["cloudfoundry.org/metrics-guid"],
 		"instances":    rc.Spec.Replicas,
@@ -597,7 +597,7 @@ func initializeHttpClient(skipCertVerify bool) *http.Client {
 
 func deleteReplicationController(logger lager.Logger, k8sClient v1core.CoreInterface, processGuid string) (int, error) {
 	rcList, err := k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
-		LabelSelector: labels.Set{"cloudfoundry.org/process-guid": processGuid}.AsSelector(),
+		LabelSelector: labels.Set{PROCESS_GUID_LABEL: processGuid}.AsSelector(),
 	})
 
 	if err != nil {
