@@ -402,7 +402,7 @@ var _ = Describe("LRPProcessor", func() {
 		//fakeReplicationController.ListReturns(replicationControllerList, nil)
 		fakeReplicationController.ListStub = func(opts api.ListOptions) (*v1.ReplicationControllerList, error) {
 			logger.Debug("print out opts", lager.Data{"opts": opts.LabelSelector.String()})
-			if opts.LabelSelector.String() == "cloudfoundry.org/domain=cf-apps" {
+			if opts.LabelSelector.String() == "cloudfoundry.org/process-guid" {
 				return replicationControllerList, nil
 			} else {
 				rcList := &v1.ReplicationControllerList{

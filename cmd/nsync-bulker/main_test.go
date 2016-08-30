@@ -174,6 +174,9 @@ var _ = Describe("Syncing desired state with CC", func() {
 
 	AfterEach(func() {
 		defer fakeCC.Close()
+
+		// clean up the new rc in kube
+		deleteReplicationController(k8sClient, "default", newProcessGuid)
 	})
 
 	Describe("when the CC polling interval elapses", func() {
@@ -204,7 +207,7 @@ var _ = Describe("Syncing desired state with CC", func() {
 							},
 						},
 						Spec: v1.ReplicationControllerSpec{
-							Replicas: helpers.Int32Ptr(999),
+							Replicas: helpers.Int32Ptr(2),
 							Selector: map[string]string{
 								"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid(),
 							},
@@ -219,7 +222,7 @@ var _ = Describe("Syncing desired state with CC", func() {
 								Spec: v1.PodSpec{
 									Containers: []v1.Container{{
 										Name:  "container-name",
-										Image: "busybox",
+										Image: "nginx",
 										Resources: v1.ResourceRequirements{
 											Limits: v1.ResourceList{
 												v1.ResourceCPU:                   resource.MustParse("1000m"),
@@ -241,7 +244,7 @@ var _ = Describe("Syncing desired state with CC", func() {
 
 				})
 
-				FIt("it (adds), and (removes extra) LRPs", func() {
+				It("it (adds), and (removes extra) LRPs", func() {
 					Eventually(func() bool {
 						rcList, _ := k8sClient.ReplicationControllers(api.NamespaceAll).List(api.ListOptions{
 							LabelSelector: labels.Set{"cloudfoundry.org/process-guid": excessProcessGuid.ShortenedGuid()}.AsSelector(),
@@ -301,4 +304,17 @@ func loadClientConfig() *restclient.Config {
 		},
 	}
 	return clientConfig
+}
+
+func deleteReplicationController(k8sClient v1core.CoreInterface, namespace string, pg helpers.ProcessGuid) {
+	k8sClient.ReplicationControllers(namespace).Delete(pg.ShortenedGuid(), nil)
+
+	podsList, _ := k8sClient.Pods(namespace).List(api.ListOptions{
+		LabelSelector: labels.Set{"cloudfoundry.org/process-guid": pg.ShortenedGuid()}.AsSelector(),
+	})
+
+	items := podsList.Items
+	for _, pod := range items {
+		k8sClient.Pods(namespace).Delete(pod.ObjectMeta.Name, nil)
+	}
 }

@@ -426,10 +426,17 @@ func (l *LRPProcessor) updateStaleDesiredLRPs(
 
 func (l *LRPProcessor) getSchedulingInfoMap(logger lager.Logger) (map[string]*KubeSchedulingInfo, error) {
 	logger.Info("getting-desired-lrps-from-kube")
-	opts := api.ListOptions{
-		LabelSelector: labels.Set{"cloudfoundry.org/domain": cc_messages.AppLRPDomain}.AsSelector(),
+	selector := labels.NewSelector()
+	r, err := labels.NewRequirement("cloudfoundry.org/process-guid", labels.ExistsOperator, nil)
+	if err != nil {
+		logger.Error("failed-getting-desired-lrps-from-kube", err)
+		return nil, err
 	}
-	//logger.Debug("opts to list replication controller", lager.Data{"data": opts.LabelSelector.String()})
+	selector = selector.Add(*r)
+	opts := api.ListOptions{
+		LabelSelector: selector,
+	}
+	logger.Debug("opts to list replication controller", lager.Data{"data": opts.LabelSelector.String()})
 	rcList, err := l.k8sClient.ReplicationControllers(api.NamespaceAll).List(opts)
 	if err != nil {
 		logger.Error("failed-getting-desired-lrps-from-kube", err)
